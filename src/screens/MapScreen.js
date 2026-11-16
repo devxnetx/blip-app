@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import BootScreen from '../components/BootScreen';
 import CountMarker from '../components/CountMarker';
 import PinMarker from '../components/PinMarker';
+import ThemeSwitch from '../components/ThemeSwitch';
 import { groupPins, zoomRegion } from '../cluster';
 import { createPin, createReply, deletePin, fetchPins, fetchReplies, reportPin } from '../api';
 import { deviceId } from '../device';
@@ -34,6 +35,7 @@ import { API_URL } from '../config';
 import { lookupIpCity } from '../ipCity';
 import { shrinkPhoto } from '../photo';
 import { timeAgo, timeLeft } from '../time';
+import { useTheme } from '../theme';
 
 const SOFIA = {
   latitude: 42.6977,
@@ -93,25 +95,40 @@ function categoryLabel(id) {
   return CATEGORIES.find((item) => item.id === id)?.label || '';
 }
 
-const GRAY_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+const LIGHT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+const DARK_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
 
 function MeMarker({ coordinate }) {
+  const { colors } = useTheme();
   const [tracking, setTracking] = useState(true);
 
   useEffect(() => {
+    setTracking(true);
     const timer = setTimeout(() => setTracking(false), 400);
     return () => clearTimeout(timer);
-  }, []);
+  }, [colors]);
 
   return (
     <Marker coordinate={coordinate} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={tracking} zIndex={10000}>
-      <View style={styles.meDot} collapsable={false} />
+      <View
+        collapsable={false}
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: 9,
+          backgroundColor: colors.me,
+          borderWidth: 3,
+          borderColor: colors.meBorder,
+        }}
+      />
     </Marker>
   );
 }
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
+  const { dark, colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const mapRef = useRef(null);
   const regionRef = useRef(SOFIA);
   const [region, setRegion] = useState(SOFIA);
@@ -734,7 +751,13 @@ export default function MapScreen() {
         }}
         onRegionChangeComplete={scheduleLoad}
       >
-        <UrlTile urlTemplate={GRAY_TILES} maximumZ={16} tileSize={256} zIndex={-1} />
+        <UrlTile
+          key={dark ? 'dark-tiles' : 'light-tiles'}
+          urlTemplate={dark ? DARK_TILES : LIGHT_TILES}
+          maximumZ={16}
+          tileSize={256}
+          zIndex={-1}
+        />
         {mapItems.clusters.map((cluster) => (
           <CountMarker
             key={`count-${cluster.id}`}
@@ -799,6 +822,10 @@ export default function MapScreen() {
         </View>
       ) : null}
 
+      <View style={[styles.themePill, { bottom: insets.bottom + 74 }]}>
+        <ThemeSwitch compact />
+      </View>
+
       <Pressable
         style={[styles.locate, { bottom: insets.bottom + 16 }]}
         onPress={recenter}
@@ -824,7 +851,7 @@ export default function MapScreen() {
         onPress={pinHere}
         disabled={finding}
       >
-        {finding ? <ActivityIndicator color="#f6f4ef" /> : <Text style={styles.pinButtonText}>Пин тук</Text>}
+        {finding ? <ActivityIndicator color={colors.onButton} /> : <Text style={styles.pinButtonText}>Пин тук</Text>}
       </Pressable>
 
       <Modal visible={citiesOpen} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => setCitiesOpen(false)}>
@@ -835,11 +862,13 @@ export default function MapScreen() {
               <Text style={styles.photoButtonText}>Затвори</Text>
             </Pressable>
           </View>
+          <ThemeSwitch />
           <TextInput
             value={cityQuery}
             onChangeText={setCityQuery}
             placeholder="Търси град"
-            placeholderTextColor="#8a847a"
+            placeholderTextColor={colors.faint}
+            keyboardAppearance={dark ? 'dark' : 'light'}
             autoCorrect={false}
             style={styles.citySearch}
           />
@@ -877,6 +906,7 @@ export default function MapScreen() {
               <Text style={styles.photoButtonText}>Затвори</Text>
             </Pressable>
           </View>
+          <ThemeSwitch />
           <Text style={styles.radiusLabel}>{Math.round(radiusKm)} км</Text>
           <Slider
             style={styles.slider}
@@ -884,9 +914,9 @@ export default function MapScreen() {
             maximumValue={30}
             step={1}
             value={radiusKm}
-            minimumTrackTintColor="#1c1b19"
-            maximumTrackTintColor="#d9d6d0"
-            thumbTintColor="#c2410c"
+            minimumTrackTintColor={colors.sliderMin}
+            maximumTrackTintColor={colors.sliderMax}
+            thumbTintColor={colors.accent}
             onValueChange={(value) => setRadiusKm(value)}
             onSlidingComplete={(value) => loadNearby(value)}
           />
@@ -904,7 +934,7 @@ export default function MapScreen() {
               </Pressable>
             ))}
           </View>
-          {nearbyLoading ? <ActivityIndicator color="#1c1b19" style={styles.listSpinner} /> : null}
+          {nearbyLoading ? <ActivityIndicator color={colors.spinner} style={styles.listSpinner} /> : null}
           {nearbyError ? <Text style={styles.optional}>{nearbyError}</Text> : null}
           <FlatList
             style={styles.list}
@@ -959,7 +989,8 @@ export default function MapScreen() {
                 value={message}
                 onChangeText={setMessage}
                 placeholder="Кратко съобщение"
-                placeholderTextColor="#8a847a"
+                placeholderTextColor={colors.faint}
+                keyboardAppearance={dark ? 'dark' : 'light'}
                 maxLength={80}
                 multiline
                 style={styles.input}
@@ -997,7 +1028,7 @@ export default function MapScreen() {
                 onPress={dropPin}
                 disabled={!message.trim() || saving}
               >
-                {saving ? <ActivityIndicator color="#f6f4ef" /> : <Text style={styles.dropText}>Пусни пин</Text>}
+                {saving ? <ActivityIndicator color={colors.onAccent} /> : <Text style={styles.dropText}>Пусни пин</Text>}
               </Pressable>
             </ScrollView>
           </View>
@@ -1055,7 +1086,8 @@ export default function MapScreen() {
                         value={replyText}
                         onChangeText={setReplyText}
                         placeholder="Имаш право само на 1 отговор"
-                        placeholderTextColor="#8a847a"
+                        placeholderTextColor={colors.faint}
+                        keyboardAppearance={dark ? 'dark' : 'light'}
                         maxLength={200}
                         multiline
                         style={styles.input}
@@ -1072,7 +1104,7 @@ export default function MapScreen() {
                         onPress={sendReply}
                         disabled={!replyText.trim() || sendingReply}
                       >
-                        {sendingReply ? <ActivityIndicator color="#f6f4ef" /> : <Text style={styles.dropText}>Изпрати отговор</Text>}
+                        {sendingReply ? <ActivityIndicator color={colors.onAccent} /> : <Text style={styles.dropText}>Изпрати отговор</Text>}
                       </Pressable>
                     </>
                   )}
@@ -1096,228 +1128,223 @@ export default function MapScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#d9d6d0' },
-  credit: { position: 'absolute', left: 12, color: '#5e5a54', fontSize: 11 },
-  banner: {
-    position: 'absolute',
-    left: 16,
-    right: 120,
-    backgroundColor: '#1c1b19',
-    borderRadius: 12,
-    padding: 12,
-  },
-  bannerText: { color: '#f6f4ef', textAlign: 'center' },
-  notice: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    backgroundColor: '#1c1b19',
-    borderRadius: 14,
-    padding: 12,
-  },
-  noticeTitle: { color: '#f6f4ef', fontWeight: '700' },
-  noticeBody: { color: '#f6f4ef', marginTop: 4 },
-  hint: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    backgroundColor: 'rgba(246,244,239,0.94)',
-    borderRadius: 12,
-    padding: 12,
-  },
-  hintText: { color: '#1c1b19', textAlign: 'center' },
-  cityRow: { position: 'absolute', left: 0, right: 0 },
-  cityRowContent: { paddingHorizontal: 16, gap: 8 },
-  cityPill: {
-    backgroundColor: 'rgba(246,244,239,0.94)',
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  cityPillText: { color: '#1c1b19', fontWeight: '700' },
-  cityMore: { backgroundColor: '#1c1b19' },
-  cityMoreText: { color: '#f6f4ef', fontWeight: '700' },
-  citySearch: {
-    marginTop: 16,
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#1c1b19',
-  },
-  cityChoice: {
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d9d6d0',
-  },
-  cityChoiceText: { color: '#1c1b19', fontSize: 18, fontWeight: '700' },
-  locate: {
-    position: 'absolute',
-    left: 16,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#f6f4ef',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  locateRing: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#1c1b19',
-  },
-  listButton: {
-    position: 'absolute',
-    right: 16,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#1c1b19',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  listIcon: { width: 18, gap: 4 },
-  listBar: { height: 2, borderRadius: 1, backgroundColor: '#f6f4ef' },
-  listScreen: { flex: 1, backgroundColor: '#f6f4ef', paddingHorizontal: 20 },
-  list: { flex: 1 },
-  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8, marginBottom: 8 },
-  listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  radiusLabel: { marginTop: 18, color: '#1c1b19', fontWeight: '700', fontSize: 16 },
-  slider: { width: '100%', height: 40 },
-  listSpinner: { marginVertical: 8, alignSelf: 'flex-start' },
-  listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#d9d6d0',
-  },
-  listMain: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 12,
-  },
-  copyLink: { color: '#c2410c', fontWeight: '700', paddingVertical: 8 },
-  shareRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 8, marginBottom: 8 },
-  shareText: { color: '#c2410c', fontWeight: '700', fontSize: 16 },
-  listThumb: { width: 48, height: 48, borderRadius: 10, backgroundColor: '#d9d6d0' },
-  listCopy: { flex: 1 },
-  listMessage: { color: '#1c1b19', fontSize: 16, fontWeight: '600' },
-  listCategory: { marginTop: 2, color: '#5e5a54', fontSize: 13, fontWeight: '600' },
-  listMeta: { marginTop: 4, color: '#8a847a', fontSize: 13 },
-  listEmptyWrap: { paddingTop: 24 },
-  pinButton: {
-    position: 'absolute',
-    right: 16,
-    backgroundColor: '#1c1b19',
-    borderRadius: 999,
-    minWidth: 112,
-    minHeight: 48,
-    paddingHorizontal: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pinButtonText: { color: '#f6f4ef', fontWeight: '700', fontSize: 16 },
-  sheetWrap: { flex: 1, justifyContent: 'flex-end' },
-  sheetBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(28,27,25,0.35)' },
-  sheet: {
-    backgroundColor: '#f6f4ef',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    padding: 20,
-    maxHeight: '80%',
-  },
-  sheetTitle: { fontSize: 22, fontWeight: '700', color: '#1c1b19' },
-  sheetHint: { marginTop: 4, marginBottom: 14, color: '#5e5a54' },
-  input: {
-    minHeight: 72,
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#1c1b19',
-    textAlignVertical: 'top',
-  },
-  count: { alignSelf: 'flex-end', marginTop: 4, color: '#8a847a', fontSize: 12 },
-  photoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
-  preview: { width: 72, height: 72, borderRadius: 10, marginTop: 12, backgroundColor: '#d9d6d0' },
-  detailImage: { width: '100%', height: 220, borderRadius: 14, marginBottom: 14, backgroundColor: '#d9d6d0' },
-  photoButton: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#1c1b19',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  photoButtonText: { color: '#1c1b19', fontWeight: '600' },
-  optional: { color: '#8a847a' },
-  removePhoto: { color: '#c2410c', fontWeight: '600' },
-  durations: { flexDirection: 'row', gap: 8, marginTop: 16 },
-  chip: { borderRadius: 999, backgroundColor: '#fff', paddingHorizontal: 12, paddingVertical: 8 },
-  chipOn: { backgroundColor: '#1c1b19' },
-  chipText: { color: '#1c1b19', fontWeight: '600' },
-  chipTextOn: { color: '#f6f4ef' },
-  drop: {
-    marginTop: 18,
-    backgroundColor: '#c2410c',
-    borderRadius: 14,
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dropOff: { opacity: 0.45 },
-  dropText: { color: '#f6f4ef', fontWeight: '700', fontSize: 16 },
-  reply: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 8,
-  },
-  replyMine: { backgroundColor: '#1c1b19' },
-  replyText: { color: '#1c1b19', fontSize: 16 },
-  replyTextMine: { color: '#f6f4ef' },
-  replyTime: { color: '#8a847a', fontSize: 12, marginTop: 4 },
-  replyTimeMine: { color: '#cfcabe' },
-  checkRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 10 },
-  box: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: '#1c1b19',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  boxOn: { backgroundColor: '#1c1b19' },
-  boxMark: { color: '#f6f4ef', fontSize: 14, fontWeight: '700' },
-  checkLabel: { flex: 1, color: '#1c1b19', fontSize: 15 },
-  meDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#2563eb',
-    borderWidth: 3,
-    borderColor: '#f6f4ef',
-  },
-  replySent: { color: '#1c1b19', fontWeight: '600', marginBottom: 8 },
-  reported: { color: '#8a847a', marginTop: 14 },
-  report: { alignSelf: 'flex-start', marginTop: 14, paddingVertical: 6 },
-  reportText: { color: '#c2410c', fontWeight: '600' },
-  remove: {
-    backgroundColor: '#1c1b19',
-    borderRadius: 14,
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  removeText: { color: '#f6f4ef', fontWeight: '700' },
-  close: { alignSelf: 'center', marginTop: 14, padding: 8 },
-});
+function createStyles(c) {
+  return StyleSheet.create({
+    fill: { flex: 1, backgroundColor: c.bg },
+    credit: { position: 'absolute', left: 12, color: c.credit, fontSize: 11 },
+    banner: {
+      position: 'absolute',
+      left: 16,
+      right: 120,
+      backgroundColor: c.button,
+      borderRadius: 12,
+      padding: 12,
+    },
+    bannerText: { color: c.onButton, textAlign: 'center' },
+    notice: {
+      position: 'absolute',
+      left: 16,
+      right: 16,
+      backgroundColor: c.button,
+      borderRadius: 14,
+      padding: 12,
+    },
+    noticeTitle: { color: c.onButton, fontWeight: '700' },
+    noticeBody: { color: c.onButton, marginTop: 4 },
+    hint: {
+      position: 'absolute',
+      left: 16,
+      right: 16,
+      backgroundColor: c.hint,
+      borderRadius: 12,
+      padding: 12,
+    },
+    hintText: { color: c.hintText, textAlign: 'center' },
+    cityRow: { position: 'absolute', left: 0, right: 0 },
+    cityRowContent: { paddingHorizontal: 16, gap: 8 },
+    cityPill: {
+      backgroundColor: c.hint,
+      borderRadius: 999,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    cityPillText: { color: c.ink, fontWeight: '700' },
+    cityMore: { backgroundColor: c.button },
+    cityMoreText: { color: c.onButton, fontWeight: '700' },
+    citySearch: {
+      marginTop: 16,
+      borderRadius: 14,
+      backgroundColor: c.card,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 16,
+      color: c.ink,
+    },
+    cityChoice: {
+      paddingVertical: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.line,
+    },
+    cityChoiceText: { color: c.ink, fontSize: 18, fontWeight: '700' },
+    themePill: { position: 'absolute', left: 16 },
+    locate: {
+      position: 'absolute',
+      left: 16,
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: c.surface,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    locateRing: {
+      width: 16,
+      height: 16,
+      borderRadius: 8,
+      borderWidth: 2,
+      borderColor: c.ink,
+    },
+    listButton: {
+      position: 'absolute',
+      right: 16,
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: c.button,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    listIcon: { width: 18, gap: 4 },
+    listBar: { height: 2, borderRadius: 1, backgroundColor: c.onButton },
+    listScreen: { flex: 1, backgroundColor: c.surface, paddingHorizontal: 20 },
+    list: { flex: 1 },
+    filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8, marginBottom: 8 },
+    listHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    radiusLabel: { marginTop: 18, color: c.ink, fontWeight: '700', fontSize: 16 },
+    slider: { width: '100%', height: 40 },
+    listSpinner: { marginVertical: 8, alignSelf: 'flex-start' },
+    listRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.line,
+    },
+    listMain: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingVertical: 12,
+    },
+    copyLink: { color: c.accent, fontWeight: '700', paddingVertical: 8 },
+    shareRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 8, marginBottom: 8 },
+    shareText: { color: c.accent, fontWeight: '700', fontSize: 16 },
+    listThumb: { width: 48, height: 48, borderRadius: 10, backgroundColor: c.thumb },
+    listCopy: { flex: 1 },
+    listMessage: { color: c.ink, fontSize: 16, fontWeight: '600' },
+    listCategory: { marginTop: 2, color: c.muted, fontSize: 13, fontWeight: '600' },
+    listMeta: { marginTop: 4, color: c.faint, fontSize: 13 },
+    listEmptyWrap: { paddingTop: 24 },
+    pinButton: {
+      position: 'absolute',
+      right: 16,
+      backgroundColor: c.button,
+      borderRadius: 999,
+      minWidth: 112,
+      minHeight: 48,
+      paddingHorizontal: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    pinButtonText: { color: c.onButton, fontWeight: '700', fontSize: 16 },
+    sheetWrap: { flex: 1, justifyContent: 'flex-end' },
+    sheetBackdrop: { ...StyleSheet.absoluteFill, backgroundColor: c.backdrop },
+    sheet: {
+      backgroundColor: c.surface,
+      borderTopLeftRadius: 22,
+      borderTopRightRadius: 22,
+      padding: 20,
+      maxHeight: '80%',
+    },
+    sheetTitle: { fontSize: 22, fontWeight: '700', color: c.ink },
+    sheetHint: { marginTop: 4, marginBottom: 14, color: c.muted },
+    input: {
+      minHeight: 72,
+      borderRadius: 14,
+      backgroundColor: c.card,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 16,
+      color: c.ink,
+      textAlignVertical: 'top',
+    },
+    count: { alignSelf: 'flex-end', marginTop: 4, color: c.faint, fontSize: 12 },
+    photoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
+    preview: { width: 72, height: 72, borderRadius: 10, marginTop: 12, backgroundColor: c.thumb },
+    detailImage: { width: '100%', height: 220, borderRadius: 14, marginBottom: 14, backgroundColor: c.thumb },
+    photoButton: {
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: c.ink,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+    },
+    photoButtonText: { color: c.ink, fontWeight: '600' },
+    optional: { color: c.faint },
+    removePhoto: { color: c.accent, fontWeight: '600' },
+    durations: { flexDirection: 'row', gap: 8, marginTop: 16 },
+    chip: { borderRadius: 999, backgroundColor: c.card, paddingHorizontal: 12, paddingVertical: 8 },
+    chipOn: { backgroundColor: c.button },
+    chipText: { color: c.ink, fontWeight: '600' },
+    chipTextOn: { color: c.onButton },
+    drop: {
+      marginTop: 18,
+      backgroundColor: c.accent,
+      borderRadius: 14,
+      minHeight: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dropOff: { opacity: 0.45 },
+    dropText: { color: c.onAccent, fontWeight: '700', fontSize: 16 },
+    reply: {
+      backgroundColor: c.card,
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      marginBottom: 8,
+    },
+    replyMine: { backgroundColor: c.replyMine },
+    replyText: { color: c.ink, fontSize: 16 },
+    replyTextMine: { color: c.replyMineText },
+    replyTime: { color: c.faint, fontSize: 12, marginTop: 4 },
+    replyTimeMine: { color: c.replyMineTime },
+    checkRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 10 },
+    box: {
+      width: 22,
+      height: 22,
+      borderRadius: 6,
+      borderWidth: 1.5,
+      borderColor: c.ink,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    boxOn: { backgroundColor: c.button },
+    boxMark: { color: c.onButton, fontSize: 14, fontWeight: '700' },
+    checkLabel: { flex: 1, color: c.ink, fontSize: 15 },
+    replySent: { color: c.ink, fontWeight: '600', marginBottom: 8 },
+    reported: { color: c.faint, marginTop: 14 },
+    report: { alignSelf: 'flex-start', marginTop: 14, paddingVertical: 6 },
+    reportText: { color: c.accent, fontWeight: '600' },
+    remove: {
+      backgroundColor: c.button,
+      borderRadius: 14,
+      minHeight: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    removeText: { color: c.onButton, fontWeight: '700' },
+    close: { alignSelf: 'center', marginTop: 14, padding: 8 },
+  });
+}

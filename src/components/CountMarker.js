@@ -1,14 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Marker } from 'react-native-maps';
+import { useTheme } from '../theme';
 
 export default function CountMarker({ cluster, onPress }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
 
   useEffect(() => {
+    setTracking(true);
     const timer = setTimeout(() => setTracking(false), 400);
     return () => clearTimeout(timer);
-  }, [cluster.count]);
+  }, [cluster.count, colors]);
 
   return (
     <Marker
@@ -25,17 +29,19 @@ export default function CountMarker({ cluster, onPress }) {
   );
 }
 
-const styles = StyleSheet.create({
-  count: {
-    minWidth: 46,
-    height: 46,
-    paddingHorizontal: 10,
-    borderRadius: 23,
-    backgroundColor: '#1c1b19',
-    borderWidth: 2,
-    borderColor: '#f6f4ef',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  countText: { color: '#f6f4ef', fontWeight: '700', fontSize: 15 },
-});
+function createStyles(c) {
+  return StyleSheet.create({
+    count: {
+      minWidth: 46,
+      height: 46,
+      paddingHorizontal: 10,
+      borderRadius: 23,
+      backgroundColor: c.pin,
+      borderWidth: 2,
+      borderColor: c.countBorder,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    countText: { color: c.pinText, fontWeight: '700', fontSize: 15 },
+  });
+}

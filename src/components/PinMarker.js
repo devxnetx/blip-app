@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Marker } from 'react-native-maps';
+import { useTheme } from '../theme';
 
 const CATEGORIES = {
   seeking: 'Търся',
@@ -15,13 +16,15 @@ function categoryLabel(id) {
 }
 
 export default function PinMarker({ pin, onPress, stackOffset = 0 }) {
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
 
   useEffect(() => {
     setTracking(true);
     const timer = setTimeout(() => setTracking(false), pin.image_url ? 700 : 350);
     return () => clearTimeout(timer);
-  }, [stackOffset, pin.image_url, pin.message, pin.category]);
+  }, [stackOffset, pin.image_url, pin.message, pin.category, colors]);
 
   return (
     <Marker
@@ -53,32 +56,34 @@ export default function PinMarker({ pin, onPress, stackOffset = 0 }) {
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { alignItems: 'center', maxWidth: 168 },
-  bubble: {
-    backgroundColor: '#1c1b19',
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    maxWidth: 168,
-  },
-  thumb: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    marginBottom: 6,
-    backgroundColor: '#3a3834',
-  },
-  message: { color: '#f6f4ef', fontSize: 13, fontWeight: '600' },
-  category: { color: '#cfcabe', fontSize: 11, fontWeight: '600', marginTop: 3 },
-  tail: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderTopWidth: 8,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderTopColor: '#1c1b19',
-  },
-});
+function createStyles(c) {
+  return StyleSheet.create({
+    wrap: { alignItems: 'center', maxWidth: 168 },
+    bubble: {
+      backgroundColor: c.pin,
+      borderRadius: 14,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      maxWidth: 168,
+    },
+    thumb: {
+      width: 48,
+      height: 48,
+      borderRadius: 8,
+      marginBottom: 6,
+      backgroundColor: c.pinThumb,
+    },
+    message: { color: c.pinText, fontSize: 13, fontWeight: '600' },
+    category: { color: c.pinMuted, fontSize: 11, fontWeight: '600', marginTop: 3 },
+    tail: {
+      width: 0,
+      height: 0,
+      borderLeftWidth: 7,
+      borderRightWidth: 7,
+      borderTopWidth: 8,
+      borderLeftColor: 'transparent',
+      borderRightColor: 'transparent',
+      borderTopColor: c.pin,
+    },
+  });
+}
