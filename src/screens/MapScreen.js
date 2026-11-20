@@ -34,7 +34,8 @@ import { notifyLocal } from '../notify';
 import { API_URL } from '../config';
 import { lookupIpCity } from '../ipCity';
 import { shrinkPhoto } from '../photo';
-import { timeAgo, timeLeft } from '../time';
+import { parseLocalStart, timeAgo, timeLeft, upcomingLabel } from '../time';
+import { FALLBACK_CATEGORIES, loadCategories } from '../categories';
 import { useTheme } from '../theme';
 
 const SOFIA = {
@@ -54,14 +55,6 @@ const DURATIONS = [
   { id: '5m', label: '5 мин' },
   { id: '1h', label: '1 час' },
   { id: '24h', label: '24 часа' },
-];
-
-const CATEGORIES = [
-  { id: 'seeking', label: 'Търся' },
-  { id: 'lost', label: 'Загубено' },
-  { id: 'warning', label: 'Внимание' },
-  { id: 'free', label: 'Безплатно' },
-  { id: 'other', label: 'Друго' },
 ];
 
 const CITIES = [
@@ -94,10 +87,6 @@ const CITIES = [
   { name: 'Смолян', latitude: 41.5774, longitude: 24.7129 },
   { name: 'Казанлък', latitude: 42.6194, longitude: 25.393 },
 ];
-
-function categoryLabel(id) {
-  return CATEGORIES.find((item) => item.id === id)?.label || '';
-}
 
 function foldPlace(value) {
   return String(value || '')
@@ -190,6 +179,9 @@ export default function MapScreen() {
   const [message, setMessage] = useState('');
   const [image, setImage] = useState(null);
   const [duration, setDuration] = useState('1h');
+  const [whenMode, setWhenMode] = useState('now');
+  const [startsAt, setStartsAt] = useState('');
+  const [categories, setCategories] = useState(FALLBACK_CATEGORIES);
   const [category, setCategory] = useState('other');
   const [listCategory, setListCategory] = useState('');
   const [error, setError] = useState('');
@@ -229,7 +221,12 @@ export default function MapScreen() {
       if (requestId !== requestRef.current) {
         return;
       }
-      setPins(rows.filter((pin) => new Date(pin.expires_at).getTime() > Date.now()));
+      setPins(rows.filter((pin) => (
+        pin.latitude != null
+        && pin.longitude != null
+        && pin.kind !== 'unassigned'
+        && new Date(pin.expires_at).getTime() > Date.now()
+      )));
       setError('');
     } catch {
       if (requestId === requestRef.current) {
@@ -237,6 +234,32 @@ export default function MapScreen() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    loadCategories().then((next) => {
+      if (!stopped) {
+        setCategories(next);
+      }
+    });
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (categories.some((item) => item.id === category)) {
+      return;
+    }
+    const next = categories.find((item) => item.id === 'other') || categories[0];
+    if (next) {
+      setCategory(next.id);
+    }
+  }, [categories, category]);
+
+  function categoryLabel(id) {
+    return categories.find((item) => item.id === id)?.label || '';
+  }
 
   useEffect(() => {
     const refresh = setInterval(() => load(regionRef.current), 20000);
@@ -512,6 +535,8 @@ export default function MapScreen() {
       setMessage('');
       setImage(null);
       setDuration('1h');
+      setWhenMode('now');
+      setStartsAt('');
       setCategory('other');
       setSelected(null);
       setComposer({ latitude, longitude });
@@ -564,6 +589,20 @@ export default function MapScreen() {
       return;
     }
 
+    let startIso = null;
+    if (whenMode === 'upcoming') {
+      const parsed = parseLocalStart(startsAt);
+      if (!parsed) {
+        Alert.alert('Датата не е ясна', 'Напиши я като ДД.ММ.ГГГГ ЧЧ:ММ.');
+        return;
+      }
+      if (parsed.getTime() <= Date.now()) {
+        Alert.alert('Датата е минала', 'Избери бъдещ час.');
+        return;
+      }
+      startIso = parsed.toISOString();
+    }
+
     setSaving(true);
     try {
       const device = deviceRef.current || await deviceId();
@@ -574,6 +613,8 @@ export default function MapScreen() {
         longitude: composer.longitude,
         duration,
         category,
+        kind: whenMode === 'upcoming' ? 'upcoming' : 'normal',
+        startsAt: startIso,
         image,
         device,
       });
@@ -927,6 +968,7 @@ export default function MapScreen() {
           <PinMarker
             key={pin.id}
             pin={pin}
+            label={categoryLabel(pin.category)}
             stackOffset={pin.stackOffset}
             onPress={() => setSelected(pin)}
             now={now}
@@ -1080,7 +1122,7 @@ export default function MapScreen() {
             <Pressable onPress={() => setListCategory('')} style={[styles.chip, listCategory === '' && styles.chipOn]}>
               <Text style={[styles.chipText, listCategory === '' && styles.chipTextOn]}>Всички</Text>
             </Pressable>
-            {CATEGORIES.map((item) => (
+            {categories.map((item) => (
               <Pressable
                 key={item.id}
                 onPress={() => setListCategory(item.id)}
@@ -1111,7 +1153,7 @@ export default function MapScreen() {
                     {categoryLabel(item.category) ? (
                       <Text style={styles.listCategory}>{categoryLabel(item.category)}</Text>
                     ) : null}
-                    <Text style={styles.listMeta}>{formatDistance(item.km)} · {timeAgo(item.created_at, now)}</Text>
+                    <Text style={styles.listMeta}>{formatDistance(item.km)} · {upcomingLabel(item, now) || timeAgo(item.created_at, now)}</Text>
                   </View>
                 </Pressable>
                 <View style={styles.listActions}>
@@ -1136,7 +1178,7 @@ export default function MapScreen() {
               <Text style={styles.sheetTitle}>Нов пин</Text>
               <Text style={styles.sheetHint}>Този пин ползва мястото, където стоиш.</Text>
               <View style={styles.filters}>
-                {CATEGORIES.map((item) => (
+                {categories.map((item) => (
                   <Pressable
                     key={item.id}
                     onPress={() => setCategory(item.id)}
@@ -1174,6 +1216,29 @@ export default function MapScreen() {
                 )}
               </View>
               <View style={styles.durations}>
+                <Pressable onPress={() => setWhenMode('now')} style={[styles.chip, whenMode === 'now' && styles.chipOn]}>
+                  <Text style={[styles.chipText, whenMode === 'now' && styles.chipTextOn]}>Сега</Text>
+                </Pressable>
+                <Pressable onPress={() => setWhenMode('upcoming')} style={[styles.chip, whenMode === 'upcoming' && styles.chipOn]}>
+                  <Text style={[styles.chipText, whenMode === 'upcoming' && styles.chipTextOn]}>Предстоящо</Text>
+                </Pressable>
+              </View>
+              {whenMode === 'upcoming' ? (
+                <>
+                  <TextInput
+                    value={startsAt}
+                    onChangeText={setStartsAt}
+                    placeholder="ДД.ММ.ГГГГ ЧЧ:ММ"
+                    placeholderTextColor={colors.faint}
+                    keyboardAppearance={dark ? 'dark' : 'light'}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[styles.input, styles.whenInput]}
+                  />
+                  <Text style={styles.sheetHint}>Вижда се веднага и изчезва след избраното време от началото.</Text>
+                </>
+              ) : null}
+              <View style={styles.durations}>
                 {DURATIONS.map((item) => (
                   <Pressable
                     key={item.id}
@@ -1185,9 +1250,9 @@ export default function MapScreen() {
                 ))}
               </View>
               <Pressable
-                style={[styles.drop, (!message.trim() || saving) && styles.dropOff]}
+                style={[styles.drop, (!message.trim() || saving || (whenMode === 'upcoming' && !startsAt.trim())) && styles.dropOff]}
                 onPress={dropPin}
-                disabled={!message.trim() || saving}
+                disabled={!message.trim() || saving || (whenMode === 'upcoming' && !startsAt.trim())}
               >
                 {saving ? <ActivityIndicator color={colors.onAccent} /> : <Text style={styles.dropText}>Пусни пин</Text>}
               </Pressable>
@@ -1201,17 +1266,21 @@ export default function MapScreen() {
           <Pressable style={styles.sheetBackdrop} onPress={() => setSelected(null)} />
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
             <ScrollView keyboardShouldPersistTaps="handled">
-              {selected?.image_url ? (
-                <Image source={{ uri: selected.image_url }} style={styles.detailImage} />
-              ) : null}
-              <Text style={styles.sheetTitle}>{selected?.message}</Text>
-              {selected ? (
-                <Text style={styles.listCategory}>
-                  {[categoryLabel(selected.category), timeAgo(selected.created_at, now)].filter(Boolean).join(' · ')}
-                </Text>
-              ) : null}
-              <Text style={styles.sheetHint}>{selected ? timeLeft(selected.expires_at, now) : ''}</Text>
-              {selected?.description ? <Text style={styles.story}>{selected.description}</Text> : null}
+              <View style={styles.detailRow}>
+                {selected?.image_url ? (
+                  <Image source={{ uri: selected.image_url }} style={styles.detailImage} />
+                ) : null}
+                <View style={styles.detailInfo}>
+                  <Text style={styles.sheetTitle}>{selected?.message}</Text>
+                  {selected ? (
+                    <Text style={styles.listCategory}>
+                      {[categoryLabel(selected.category), timeAgo(selected.created_at, now)].filter(Boolean).join(' · ')}
+                    </Text>
+                  ) : null}
+                  <Text style={styles.sheetHint}>{selected ? (upcomingLabel(selected, now) || timeLeft(selected.expires_at, now)) : ''}</Text>
+                  {selected?.description ? <Text style={styles.story}>{selected.description}</Text> : null}
+                </View>
+              </View>
               {selected ? (
                 <View style={styles.shareRow}>
                   <Pressable onPress={() => copyPinLink(selected)} style={styles.shareButton}>
@@ -1538,7 +1607,9 @@ function createStyles(c) {
     count: { alignSelf: 'flex-end', marginTop: 4, color: c.faint, fontSize: 12 },
     photoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
     preview: { width: 72, height: 72, borderRadius: 10, marginTop: 12, backgroundColor: c.thumb },
-    detailImage: { width: '100%', height: 220, borderRadius: 14, marginBottom: 14, backgroundColor: c.thumb },
+    detailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
+    detailInfo: { flex: 1, minWidth: 0 },
+    detailImage: { width: 112, height: 112, borderRadius: 14, backgroundColor: c.thumb },
     photoButton: {
       borderRadius: 999,
       borderWidth: 1,
@@ -1549,6 +1620,7 @@ function createStyles(c) {
     photoButtonText: { color: c.ink, fontWeight: '600' },
     optional: { color: c.faint },
     removePhoto: { color: c.accent, fontWeight: '600' },
+    whenInput: { minHeight: 48, marginTop: 12, textAlignVertical: 'center' },
     durations: { flexDirection: 'row', gap: 8, marginTop: 16 },
     chip: { borderRadius: 999, backgroundColor: c.card, paddingHorizontal: 12, paddingVertical: 8 },
     chipOn: { backgroundColor: c.button },

@@ -37,12 +37,18 @@ export async function fetchPins(region, device) {
   return body.pins || [];
 }
 
-export async function createPin({ message, latitude, longitude, duration, category, image, device }) {
+export async function createPin({ message, latitude, longitude, duration, category, kind, startsAt, image, device }) {
   const form = new FormData();
   form.append('message', message);
   form.append('latitude', String(latitude));
   form.append('longitude', String(longitude));
   form.append('duration', duration);
+  if (kind) {
+    form.append('kind', kind);
+  }
+  if (startsAt) {
+    form.append('starts_at', startsAt);
+  }
   if (category) {
     form.append('category', category);
   }

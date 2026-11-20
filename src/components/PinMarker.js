@@ -2,29 +2,17 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 import { useTheme } from '../theme';
-import { timeAgo } from '../time';
+import { timeAgo, upcomingLabel } from '../time';
 
-const CATEGORIES = {
-  seeking: 'Търся',
-  lost: 'Загубено',
-  warning: 'Внимание',
-  free: 'Безплатно',
-  other: 'Друго',
-};
-
-function categoryLabel(id) {
-  return CATEGORIES[id] || '';
-}
-
-function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0 }) {
+function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0, label = '' }) {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
   const freeze = useRef(null);
   const laidOut = useRef('');
-  const posted = timeAgo(pin.created_at, now);
-  const kind = [categoryLabel(pin.category), posted].filter(Boolean).join(' · ');
-  const layoutKey = `${pin.id}:${posted}:${pin.image_url || ''}:${stackOffset}:${stamp}`;
+  const posted = upcomingLabel(pin, now) || timeAgo(pin.created_at, now);
+  const kind = [label, posted].filter(Boolean).join(' · ');
+  const layoutKey = `${pin.id}:${posted}:${label}:${pin.image_url || ''}:${stackOffset}:${stamp}`;
 
   function paint() {
     setTracking(true);
@@ -43,7 +31,7 @@ function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0 
   useEffect(() => {
     paint();
     return () => clearTimeout(freeze.current);
-  }, [stackOffset, pin.image_url, pin.message, pin.category, posted, stamp, colors]);
+  }, [stackOffset, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
 
   return (
     <Marker
@@ -53,7 +41,7 @@ function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0 
       zIndex={stackOffset + 1}
       onPress={onPress}
     >
-      <View style={styles.wrap} collapsable={false} onLayout={onLayout}>
+      <View style={styles.wrap} collapsable={false} pointerEvents="box-none" onLayout={onLayout}>
         <View style={styles.bubble}>
           {pin.image_url ? (
             <Image
@@ -63,11 +51,13 @@ function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0 
               onError={paint}
             />
           ) : null}
-          <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
-          {kind ? <Text numberOfLines={1} style={styles.category}>{kind}</Text> : null}
+          <View style={styles.copy}>
+            <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
+            {kind ? <Text numberOfLines={2} style={styles.category}>{kind}</Text> : null}
+          </View>
         </View>
         <View style={styles.tail} />
-        {stackOffset > 0 ? <View style={{ height: stackOffset }} /> : null}
+        {stackOffset > 0 ? <View pointerEvents="none" style={{ height: stackOffset }} /> : null}
       </View>
     </Marker>
   );
@@ -77,30 +67,37 @@ export default memo(PinMarker, (prev, next) => (
   prev.pin.id === next.pin.id
   && prev.pin.message === next.pin.message
   && prev.pin.category === next.pin.category
+  && prev.label === next.label
   && prev.pin.image_url === next.pin.image_url
   && prev.pin.created_at === next.pin.created_at
+  && prev.pin.kind === next.pin.kind
+  && prev.pin.starts_at === next.pin.starts_at
   && prev.stackOffset === next.stackOffset
   && prev.stamp === next.stamp
-  && timeAgo(prev.pin.created_at, prev.now) === timeAgo(next.pin.created_at, next.now)
+  && (upcomingLabel(prev.pin, prev.now) || timeAgo(prev.pin.created_at, prev.now))
+    === (upcomingLabel(next.pin, next.now) || timeAgo(next.pin.created_at, next.now))
 ));
 
 function createStyles(c) {
   return StyleSheet.create({
-    wrap: { alignItems: 'center', maxWidth: 168 },
+    wrap: { alignItems: 'center', maxWidth: 240 },
     bubble: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
       backgroundColor: c.pin,
       borderRadius: 14,
-      paddingHorizontal: 10,
+      paddingHorizontal: 8,
       paddingVertical: 8,
-      maxWidth: 168,
+      maxWidth: 240,
     },
     thumb: {
-      width: 48,
-      height: 48,
-      borderRadius: 8,
-      marginBottom: 6,
+      width: 72,
+      height: 72,
+      borderRadius: 10,
+      marginRight: 8,
       backgroundColor: c.pinThumb,
     },
+    copy: { flexShrink: 1, maxWidth: 148 },
     message: { color: c.pinText, fontSize: 13, fontWeight: '600' },
     category: { color: c.pinMuted, fontSize: 11, fontWeight: '600', marginTop: 3 },
     tail: {

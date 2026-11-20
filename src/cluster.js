@@ -3,7 +3,10 @@ const CELL_DIVISOR = 7;
 const SAME_SPOT = 0.00015;
 
 function pinHeight(pin) {
-  return pin.image_url ? 132 : 80;
+  const upcoming = pin.kind === 'upcoming' && pin.starts_at && new Date(pin.starts_at).getTime() > Date.now();
+  const text = 40 + (pin.category ? 18 : 0) + (upcoming ? 32 : 0);
+
+  return Math.max(text, pin.image_url ? 72 : 0) + 28;
 }
 
 function sameSpot(a, b) {
