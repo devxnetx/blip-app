@@ -16,7 +16,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
+import MapView, { Marker } from 'react-native-maps';
 import Slider from '@react-native-community/slider';
 import * as Clipboard from 'expo-clipboard';
 import * as Location from 'expo-location';
@@ -43,6 +43,12 @@ const SOFIA = {
   latitudeDelta: 0.08,
   longitudeDelta: 0.08,
 };
+
+// Opening zoom. GPS is a few blocks; a detected city is the city itself.
+const GPS_ZOOM = 0.01;
+const CITY_ZOOM = 0.04;
+const CITY_PICK_ZOOM = 0.022;
+const PIN_FOCUS_ZOOM = 0.008;
 
 const DURATIONS = [
   { id: '5m', label: '5 мин' },
@@ -89,38 +95,72 @@ const CITIES = [
   { name: 'Казанлък', latitude: 42.6194, longitude: 25.393 },
 ];
 
-const FEATURED_CITIES = ['София', 'Пловдив', 'Варна', 'Бургас', 'Стара Загора'];
-
 function categoryLabel(id) {
   return CATEGORIES.find((item) => item.id === id)?.label || '';
 }
 
-const LIGHT_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}';
-const DARK_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+function foldPlace(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\u0400-\u04ff]+/gi, ' ')
+    .trim();
+}
 
-function MeMarker({ coordinate }) {
+function cityFromIp(point) {
+  const label = foldPlace(point?.city);
+  if (label) {
+    const named = CITIES.find((city) => {
+      const phrases = [foldPlace(city.find), foldPlace(city.name)].filter(Boolean);
+      return phrases.some((phrase) => phrase === label || phrase.split(' ').includes(label));
+    });
+    if (named) {
+      return named;
+    }
+  }
+
+  let best = null;
+  let bestKm = 45;
+  CITIES.forEach((city) => {
+    const km = kmBetween(point.latitude, point.longitude, city.latitude, city.longitude);
+    if (km < bestKm) {
+      bestKm = km;
+      best = city;
+    }
+  });
+  return best;
+}
+
+function mapRegion(latitude, longitude, delta) {
+  return {
+    latitude,
+    longitude,
+    latitudeDelta: delta,
+    longitudeDelta: delta,
+  };
+}
+
+function MeMarker({ coordinate, facing }) {
   const { colors } = useTheme();
   const [tracking, setTracking] = useState(true);
 
   useEffect(() => {
     setTracking(true);
-    const timer = setTimeout(() => setTracking(false), 400);
+    const timer = setTimeout(() => setTracking(false), 300);
     return () => clearTimeout(timer);
-  }, [colors]);
+  }, [coordinate, facing, colors]);
 
   return (
     <Marker coordinate={coordinate} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={tracking} zIndex={10000}>
-      <View
-        collapsable={false}
-        style={{
-          width: 18,
-          height: 18,
-          borderRadius: 9,
-          backgroundColor: colors.me,
-          borderWidth: 3,
-          borderColor: colors.meBorder,
-        }}
-      />
+      <View style={meStyles.wrap} collapsable={false}>
+        {facing == null ? null : (
+          <View style={[meStyles.beam, { transform: [{ rotate: `${facing}deg` }] }]}>
+            <View style={[meStyles.cone, { borderTopColor: colors.me }]} />
+          </View>
+        )}
+        <View style={[meStyles.dot, { backgroundColor: colors.me, borderColor: colors.meBorder }]} />
+      </View>
     </Marker>
   );
 }
@@ -133,8 +173,12 @@ export default function MapScreen() {
   const regionRef = useRef(SOFIA);
   const [region, setRegion] = useState(SOFIA);
   const [bootRegion, setBootRegion] = useState(null);
+  const [bootCover, setBootCover] = useState(true);
   const userMoved = useRef(false);
   const bootSet = useRef(false);
+  const openTarget = useRef(null);
+  const openPlayed = useRef(false);
+  const bootAt = useRef(0);
   const deviceRef = useRef(null);
   const requestRef = useRef(0);
   const loadTimer = useRef(null);
@@ -155,6 +199,10 @@ export default function MapScreen() {
   const [replyText, setReplyText] = useState('');
   const [authorOnly, setAuthorOnly] = useState(false);
   const [me, setMe] = useState(null);
+  const [heading, setHeading] = useState(null);
+  const [mapHeading, setMapHeading] = useState(0);
+  const mapHeadingRef = useRef(0);
+  const headingSyncAt = useRef(0);
   const [sendingReply, setSendingReply] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [listOpen, setListOpen] = useState(false);
@@ -170,6 +218,7 @@ export default function MapScreen() {
   const seenIds = useRef(new Set());
   const [notice, setNotice] = useState(null);
   const [copiedPinId, setCopiedPinId] = useState(null);
+  const [markerStamp, setMarkerStamp] = useState(0);
 
   const load = useCallback(async (nextRegion) => {
     const requestId = ++requestRef.current;
@@ -289,6 +338,30 @@ export default function MapScreen() {
     loadTimer.current = setTimeout(() => load(next), 400);
   }
 
+  function syncMapHeading() {
+    const now = Date.now();
+    if (now - headingSyncAt.current < 180) {
+      return;
+    }
+    headingSyncAt.current = now;
+    const map = mapRef.current;
+    if (!map?.getCamera) {
+      return;
+    }
+    map.getCamera().then((camera) => {
+      const next = Number(camera?.heading);
+      if (!Number.isFinite(next)) {
+        return;
+      }
+      const wrapped = ((next % 360) + 360) % 360;
+      if (Math.abs(mapHeadingRef.current - wrapped) < 2) {
+        return;
+      }
+      mapHeadingRef.current = wrapped;
+      setMapHeading(wrapped);
+    }).catch(() => {});
+  }
+
   async function readLocation() {
     const permission = await Location.requestForegroundPermissionsAsync();
     if (permission.status !== 'granted') {
@@ -319,6 +392,7 @@ export default function MapScreen() {
     regionRef.current = next;
     setRegion(next);
     mapRef.current?.animateToRegion(next, 400);
+    load(next);
   }
 
   const mapItems = useMemo(() => groupPins(pins, region), [pins, region]);
@@ -398,12 +472,15 @@ export default function MapScreen() {
 
   function focusPin(pin) {
     const current = regionRef.current;
+    const delta = Math.min(current.latitudeDelta || PIN_FOCUS_ZOOM, PIN_FOCUS_ZOOM);
+    userMoved.current = true;
     setListOpen(false);
+    setPins((current) => (current.some((item) => item.id === pin.id) ? current : [pin, ...current]));
     moveTo({
       latitude: pin.latitude,
       longitude: pin.longitude,
-      latitudeDelta: current.latitudeDelta,
-      longitudeDelta: current.longitudeDelta,
+      latitudeDelta: delta,
+      longitudeDelta: delta,
     });
   }
 
@@ -411,17 +488,33 @@ export default function MapScreen() {
     setFinding(true);
     setError('');
     try {
-      const next = await readLocation();
-      if (!next) {
-        return;
+      let latitude = me?.latitude;
+      let longitude = me?.longitude;
+      if (latitude == null || longitude == null) {
+        const next = await readLocation();
+        if (!next) {
+          return;
+        }
+        latitude = next.latitude;
+        longitude = next.longitude;
+        setMe({ latitude, longitude });
       }
-      moveTo(next);
+      const current = regionRef.current;
+      const delta = Math.min(current.latitudeDelta || GPS_ZOOM, GPS_ZOOM);
+      userMoved.current = true;
+      moveTo({
+        latitude,
+        longitude,
+        latitudeDelta: delta,
+        longitudeDelta: delta,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 450));
       setMessage('');
       setImage(null);
       setDuration('1h');
       setCategory('other');
       setSelected(null);
-      setComposer({ latitude: next.latitude, longitude: next.longitude });
+      setComposer({ latitude, longitude });
     } catch {
       Alert.alert('Местоположението липсва', 'Kostaa не успя да прочете къде стоиш.');
     } finally {
@@ -494,55 +587,93 @@ export default function MapScreen() {
     }
   }
 
+  function playOpenZoom() {
+    const target = openTarget.current;
+    if (!target || openPlayed.current || !mapRef.current || Date.now() - bootAt.current < 400) {
+      return;
+    }
+    openPlayed.current = true;
+    setBootCover(false);
+    mapRef.current.animateToRegion(target, 1100);
+    setTimeout(() => setMarkerStamp((value) => value + 1), 1200);
+  }
+
+  useEffect(() => {
+    if (!bootRegion) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      playOpenZoom();
+      if (openPlayed.current) {
+        clearInterval(timer);
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [bootRegion]);
+
   useEffect(() => {
     let cancelled = false;
     let watch;
+    let compass;
 
-    function showCity(latitude, longitude) {
-      if (cancelled || userMoved.current) {
+    function reveal(target) {
+      if (cancelled || bootSet.current) {
         return;
       }
-      if (bootSet.current) {
-        const km = kmBetween(
-          regionRef.current.latitude,
-          regionRef.current.longitude,
+      const wideDelta = Math.min(Math.max(target.latitudeDelta * 3.4, 0.09), 0.16);
+      const wide = mapRegion(target.latitude, target.longitude, wideDelta);
+      openTarget.current = target;
+      bootAt.current = Date.now();
+      bootSet.current = true;
+      regionRef.current = wide;
+      setRegion(wide);
+      setBootRegion(wide);
+      load(wide);
+    }
+
+    function settleOnGps(latitude, longitude) {
+      if (cancelled) {
+        return;
+      }
+      setMe({ latitude, longitude });
+      if (userMoved.current) {
+        return;
+      }
+      const next = mapRegion(latitude, longitude, GPS_ZOOM);
+      if (!bootSet.current) {
+        reveal(next);
+        return;
+      }
+      if (!openPlayed.current) {
+        const planned = openTarget.current;
+        const moved = !planned || kmBetween(
+          planned.latitude,
+          planned.longitude,
           latitude,
           longitude,
-        );
-        if (km <= 1) {
-          return;
+        ) > 0.05;
+        if (moved) {
+          openTarget.current = next;
         }
+        return;
       }
-      const next = {
+      const km = kmBetween(
+        regionRef.current.latitude,
+        regionRef.current.longitude,
         latitude,
         longitude,
-        latitudeDelta: 0.08,
-        longitudeDelta: 0.08,
-      };
+      );
+      const stillWide = regionRef.current.latitudeDelta > GPS_ZOOM * 1.8;
+      if (km <= 0.3 && !stillWide) {
+        return;
+      }
       regionRef.current = next;
       setRegion(next);
-      if (!bootSet.current || !mapRef.current) {
-        bootSet.current = true;
-        setBootRegion(next);
-      } else {
-        mapRef.current.animateToRegion(next, 500);
-      }
+      mapRef.current?.animateToRegion(next, 900);
       load(next);
     }
 
-    function applyPosition(position) {
-      if (cancelled || !position?.coords) {
-        return;
-      }
-      setMe({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      });
-      showCity(position.coords.latitude, position.coords.longitude);
-    }
-
     (async () => {
-      const ipTask = lookupIpCity();
       let status = 'undetermined';
       try {
         status = (await Location.getForegroundPermissionsAsync()).status;
@@ -550,41 +681,11 @@ export default function MapScreen() {
         status = 'denied';
       }
 
-      const permissionTask = status === 'granted'
-        ? Promise.resolve('granted')
-        : Location.requestForegroundPermissionsAsync()
-          .then((result) => result.status)
-          .catch(() => 'denied');
-
-      const gpsTask = status === 'granted'
-        ? Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
-          .then((position) => {
-            applyPosition(position);
-            return position;
-          })
-          .catch(() => null)
-        : null;
-
-      if (gpsTask) {
-        await Promise.race([
-          gpsTask,
-          new Promise((resolve) => setTimeout(resolve, 1200)),
-        ]);
-      }
-
-      if (!bootSet.current && !cancelled) {
-        const ip = await Promise.race([
-          ipTask,
-          new Promise((resolve) => setTimeout(() => resolve(null), 1600)),
-        ]);
-        if (!bootSet.current && !cancelled) {
-          const lateIp = ip || await ipTask;
-          if (!bootSet.current && !cancelled) {
-            showCity(
-              lateIp?.latitude || SOFIA.latitude,
-              lateIp?.longitude || SOFIA.longitude,
-            );
-          }
+      if (!cancelled && status !== 'granted' && status !== 'denied') {
+        try {
+          status = (await Location.requestForegroundPermissionsAsync()).status;
+        } catch {
+          status = 'denied';
         }
       }
 
@@ -592,16 +693,66 @@ export default function MapScreen() {
         return;
       }
 
-      if (status !== 'granted') {
-        try {
-          status = await permissionTask;
-          if (status === 'granted') {
-            applyPosition(await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.High,
-            }));
+      let gpsPromise = null;
+      if (status === 'granted') {
+        Location.watchHeadingAsync((update) => {
+          if (cancelled) {
+            return;
           }
-        } catch {
-          status = 'denied';
+          const value = update.trueHeading >= 0 ? update.trueHeading : update.magHeading;
+          if (!(value >= 0) || update.accuracy < 1) {
+            setHeading(null);
+            return;
+          }
+          setHeading((current) => {
+            if (current == null) {
+              return value;
+            }
+            const delta = Math.abs(((value - current + 540) % 360) - 180);
+            return delta < 4 ? current : value;
+          });
+        }).then((subscription) => {
+          if (cancelled) {
+            subscription.remove();
+            return;
+          }
+          compass = subscription;
+        }).catch(() => {
+          // A phone without a compass keeps the plain dot.
+        });
+
+        gpsPromise = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+          .catch(() => null);
+        const position = await Promise.race([
+          gpsPromise,
+          new Promise((resolve) => setTimeout(() => resolve(null), 7000)),
+        ]);
+        if (position?.coords) {
+          settleOnGps(position.coords.latitude, position.coords.longitude);
+        } else if (!cancelled) {
+          try {
+            const last = await Location.getLastKnownPositionAsync();
+            const recent = last?.timestamp && Date.now() - last.timestamp < 10 * 60 * 1000;
+            if (recent && last.coords) {
+              settleOnGps(last.coords.latitude, last.coords.longitude);
+            }
+          } catch {
+            // A missing cache falls through to the phone's city.
+          }
+          gpsPromise.then((late) => {
+            if (late?.coords) {
+              settleOnGps(late.coords.latitude, late.coords.longitude);
+            }
+          });
+        }
+      }
+
+      if (!bootSet.current && !cancelled) {
+        const ip = await lookupIpCity();
+        if (!cancelled && !bootSet.current) {
+          const city = ip ? cityFromIp(ip) : null;
+          const point = city || ip || SOFIA;
+          reveal(mapRegion(point.latitude, point.longitude, CITY_ZOOM));
         }
       }
 
@@ -610,8 +761,12 @@ export default function MapScreen() {
       }
 
       watch = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, distanceInterval: 25 },
-        (position) => applyPosition(position),
+        { accuracy: Location.Accuracy.Balanced, distanceInterval: 40 },
+        (position) => {
+          if (position?.coords) {
+            settleOnGps(position.coords.latitude, position.coords.longitude);
+          }
+        },
       );
       if (cancelled) {
         watch.remove();
@@ -621,6 +776,7 @@ export default function MapScreen() {
     return () => {
       cancelled = true;
       watch?.remove();
+      compass?.remove();
     };
   }, [load]);
 
@@ -715,8 +871,8 @@ export default function MapScreen() {
     const next = {
       latitude: city.latitude,
       longitude: city.longitude,
-      latitudeDelta: 0.08,
-      longitudeDelta: 0.08,
+      latitudeDelta: CITY_PICK_ZOOM,
+      longitudeDelta: CITY_PICK_ZOOM,
     };
     regionRef.current = next;
     setRegion(next);
@@ -744,20 +900,19 @@ export default function MapScreen() {
       <MapView
         ref={mapRef}
         style={styles.fill}
-        mapType="none"
+        mapType="standard"
+        userInterfaceStyle={dark ? 'dark' : 'light'}
         initialRegion={bootRegion}
+        onMapReady={playOpenZoom}
         onPanDrag={() => {
           userMoved.current = true;
         }}
-        onRegionChangeComplete={scheduleLoad}
+        onRegionChange={syncMapHeading}
+        onRegionChangeComplete={(next) => {
+          syncMapHeading();
+          scheduleLoad(next);
+        }}
       >
-        <UrlTile
-          key={dark ? 'dark-tiles' : 'light-tiles'}
-          urlTemplate={dark ? DARK_TILES : LIGHT_TILES}
-          maximumZ={16}
-          tileSize={256}
-          zIndex={-1}
-        />
         {mapItems.clusters.map((cluster) => (
           <CountMarker
             key={`count-${cluster.id}`}
@@ -771,37 +926,23 @@ export default function MapScreen() {
             pin={pin}
             stackOffset={pin.stackOffset}
             onPress={() => setSelected(pin)}
+            now={now}
+            stamp={markerStamp}
           />
         ))}
-        {me ? <MeMarker coordinate={me} /> : null}
+        {me ? (
+          <MeMarker
+            coordinate={me}
+            facing={heading == null ? null : ((heading - mapHeading) % 360 + 360) % 360}
+          />
+        ) : null}
       </MapView>
 
-      <Text style={[styles.credit, { top: insets.top + 10 }]}>Карта: Esri</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={[styles.cityRow, { top: insets.top + 40 }]}
-        contentContainerStyle={styles.cityRowContent}
-      >
-        {FEATURED_CITIES.map((name) => CITIES.find((city) => city.name === name)).map((city) => (
-          <Pressable key={city.name} style={styles.cityPill} onPress={() => goToCity(city)}>
-            <Text style={styles.cityPillText}>{city.name}</Text>
-          </Pressable>
-        ))}
-        <Pressable
-          style={[styles.cityPill, styles.cityMore]}
-          onPress={() => {
-            setCityQuery('');
-            setCitiesOpen(true);
-          }}
-        >
-          <Text style={styles.cityMoreText}>Още</Text>
-        </Pressable>
-      </ScrollView>
+      <Text style={[styles.credit, { top: insets.top + 10 }]}>Карта: Apple</Text>
 
       {notice ? (
         <Pressable
-          style={[styles.notice, { top: insets.top + 92 }]}
+          style={[styles.notice, { top: insets.top + 36 }]}
           onPress={() => {
             focusPin(notice.pin);
             setNotice(null);
@@ -813,12 +954,12 @@ export default function MapScreen() {
       ) : null}
 
       {error ? (
-        <Pressable style={[styles.banner, { top: insets.top + (notice ? 174 : 92) }]} onPress={() => load(regionRef.current)}>
+        <Pressable style={[styles.banner, { top: insets.top + (notice ? 118 : 36) }]} onPress={() => load(regionRef.current)}>
           <Text style={styles.bannerText}>{error} Натисни, за да опиташ пак.</Text>
         </Pressable>
       ) : pins.length === 0 && !notice ? (
-        <View style={[styles.hint, { top: insets.top + 92 }]} pointerEvents="none">
-          <Text style={styles.hintText}>Още няма нищо наблизо. „Пин тук“ пуска бележка на това място.</Text>
+        <View style={[styles.hint, { top: insets.top + 36 }]} pointerEvents="none">
+          <Text style={styles.hintText}>Още няма нищо наблизо. „Нов пин“ пуска бележка на това място.</Text>
         </View>
       ) : null}
 
@@ -827,11 +968,16 @@ export default function MapScreen() {
       </View>
 
       <Pressable
-        style={[styles.locate, { bottom: insets.bottom + 16 }]}
+        style={[styles.locate, { bottom: insets.bottom + 130 }]}
         onPress={recenter}
         accessibilityLabel="Центрирай на моето място"
       >
-        <View style={styles.locateRing} />
+        <View style={styles.target}>
+          <View style={styles.targetRing} />
+          <View style={styles.targetH} />
+          <View style={styles.targetV} />
+          <View style={styles.targetDot} />
+        </View>
       </Pressable>
 
       <Pressable
@@ -846,13 +992,20 @@ export default function MapScreen() {
         </View>
       </Pressable>
 
-      <Pressable
-        style={[styles.pinButton, { bottom: insets.bottom + 16 }]}
-        onPress={pinHere}
-        disabled={finding}
-      >
-        {finding ? <ActivityIndicator color={colors.onButton} /> : <Text style={styles.pinButtonText}>Пин тук</Text>}
-      </Pressable>
+      <View style={[styles.pinRow, { bottom: insets.bottom + 16 }]}>
+        <Pressable
+          style={styles.citiesButton}
+          onPress={() => {
+            setCityQuery('');
+            setCitiesOpen(true);
+          }}
+        >
+          <Text style={styles.citiesButtonText}>Градове</Text>
+        </Pressable>
+        <Pressable style={styles.pinButton} onPress={pinHere} disabled={finding}>
+          {finding ? <ActivityIndicator color={colors.onButton} /> : <Text style={styles.pinButtonText}>Нов пин</Text>}
+        </Pressable>
+      </View>
 
       <Modal visible={citiesOpen} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => setCitiesOpen(false)}>
         <View style={[styles.listScreen, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
@@ -955,12 +1108,17 @@ export default function MapScreen() {
                     {categoryLabel(item.category) ? (
                       <Text style={styles.listCategory}>{categoryLabel(item.category)}</Text>
                     ) : null}
-                    <Text style={styles.listMeta}>{formatDistance(item.km)} · {timeLeft(item.expires_at, now)}</Text>
+                    <Text style={styles.listMeta}>{formatDistance(item.km)} · {timeAgo(item.created_at, now)}</Text>
                   </View>
                 </Pressable>
-                <Pressable onPress={() => copyPinLink(item)} hitSlop={8}>
-                  <Text style={styles.copyLink}>{copiedPinId === item.id ? 'Копирано' : 'Копирай връзката'}</Text>
-                </Pressable>
+                <View style={styles.listActions}>
+                  <Pressable onPress={() => copyPinLink(item)} style={styles.shareButton}>
+                    <Text style={styles.shareText}>{copiedPinId === item.id ? 'Копирано' : 'Копирай'}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => sharePin(item)} style={styles.shareButton}>
+                    <Text style={styles.shareText}>Сподели</Text>
+                  </Pressable>
+                </View>
               </View>
             )}
           />
@@ -972,7 +1130,7 @@ export default function MapScreen() {
           <Pressable style={styles.sheetBackdrop} onPress={() => !saving && setComposer(null)} />
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
             <ScrollView keyboardShouldPersistTaps="handled">
-              <Text style={styles.sheetTitle}>Пин тук</Text>
+              <Text style={styles.sheetTitle}>Нов пин</Text>
               <Text style={styles.sheetHint}>Този пин ползва мястото, където стоиш.</Text>
               <View style={styles.filters}>
                 {CATEGORIES.map((item) => (
@@ -1044,16 +1202,18 @@ export default function MapScreen() {
                 <Image source={{ uri: selected.image_url }} style={styles.detailImage} />
               ) : null}
               <Text style={styles.sheetTitle}>{selected?.message}</Text>
-              {categoryLabel(selected?.category) ? (
-                <Text style={styles.listCategory}>{categoryLabel(selected.category)}</Text>
+              {selected ? (
+                <Text style={styles.listCategory}>
+                  {[categoryLabel(selected.category), timeAgo(selected.created_at, now)].filter(Boolean).join(' · ')}
+                </Text>
               ) : null}
               <Text style={styles.sheetHint}>{selected ? timeLeft(selected.expires_at, now) : ''}</Text>
               {selected ? (
                 <View style={styles.shareRow}>
-                  <Pressable onPress={() => copyPinLink(selected)} hitSlop={8}>
+                  <Pressable onPress={() => copyPinLink(selected)} style={styles.shareButton}>
                     <Text style={styles.shareText}>{copiedPinId === selected.id ? 'Копирано' : 'Копирай връзката към пина'}</Text>
                   </Pressable>
-                  <Pressable onPress={() => sharePin(selected)} hitSlop={8}>
+                  <Pressable onPress={() => sharePin(selected)} style={styles.shareButton}>
                     <Text style={styles.shareText}>Сподели</Text>
                   </Pressable>
                 </View>
@@ -1124,13 +1284,55 @@ export default function MapScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {bootCover ? (
+        <View style={styles.bootCover}>
+          <BootScreen />
+        </View>
+      ) : null}
     </View>
   );
 }
 
+const meStyles = StyleSheet.create({
+  wrap: {
+    width: 96,
+    height: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  beam: {
+    position: 'absolute',
+    width: 96,
+    height: 96,
+    alignItems: 'center',
+  },
+  cone: {
+    position: 'absolute',
+    top: 6,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 26,
+    borderRightWidth: 26,
+    borderTopWidth: 42,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    opacity: 0.35,
+  },
+  dot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 3,
+  },
+});
+
 function createStyles(c) {
   return StyleSheet.create({
     fill: { flex: 1, backgroundColor: c.bg },
+    bootCover: {
+      ...StyleSheet.absoluteFillObject,
+      zIndex: 80,
+    },
     credit: { position: 'absolute', left: 12, color: c.credit, fontSize: 11 },
     banner: {
       position: 'absolute',
@@ -1189,20 +1391,47 @@ function createStyles(c) {
     themePill: { position: 'absolute', left: 16 },
     locate: {
       position: 'absolute',
-      left: 16,
+      right: 16,
       width: 48,
       height: 48,
       borderRadius: 24,
-      backgroundColor: c.surface,
+      backgroundColor: c.button,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    locateRing: {
+    target: {
+      width: 22,
+      height: 22,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    targetRing: {
+      position: 'absolute',
       width: 16,
       height: 16,
       borderRadius: 8,
       borderWidth: 2,
-      borderColor: c.ink,
+      borderColor: c.onButton,
+    },
+    targetH: {
+      position: 'absolute',
+      width: 22,
+      height: 2,
+      borderRadius: 1,
+      backgroundColor: c.onButton,
+    },
+    targetV: {
+      position: 'absolute',
+      width: 2,
+      height: 22,
+      borderRadius: 1,
+      backgroundColor: c.onButton,
+    },
+    targetDot: {
+      width: 4,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: c.onButton,
     },
     listButton: {
       position: 'absolute',
@@ -1237,18 +1466,40 @@ function createStyles(c) {
       gap: 12,
       paddingVertical: 12,
     },
-    copyLink: { color: c.accent, fontWeight: '700', paddingVertical: 8 },
-    shareRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 8, marginBottom: 8 },
-    shareText: { color: c.accent, fontWeight: '700', fontSize: 16 },
+    listActions: { gap: 6, alignItems: 'stretch' },
+    shareRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4, marginBottom: 12 },
+    shareButton: {
+      borderRadius: 999,
+      borderWidth: 1.5,
+      borderColor: c.accent,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      alignItems: 'center',
+    },
+    shareText: { color: c.accent, fontWeight: '700', fontSize: 14, textAlign: 'center' },
     listThumb: { width: 48, height: 48, borderRadius: 10, backgroundColor: c.thumb },
     listCopy: { flex: 1 },
     listMessage: { color: c.ink, fontSize: 16, fontWeight: '600' },
     listCategory: { marginTop: 2, color: c.muted, fontSize: 13, fontWeight: '600' },
     listMeta: { marginTop: 4, color: c.faint, fontSize: 13 },
     listEmptyWrap: { paddingTop: 24 },
-    pinButton: {
+    pinRow: {
       position: 'absolute',
       right: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+    },
+    citiesButton: {
+      backgroundColor: c.button,
+      borderRadius: 999,
+      minHeight: 48,
+      paddingHorizontal: 18,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    citiesButtonText: { color: c.onButton, fontWeight: '700', fontSize: 16 },
+    pinButton: {
       backgroundColor: c.button,
       borderRadius: 999,
       minWidth: 112,

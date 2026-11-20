@@ -53,6 +53,18 @@
         }
       ],
       "expo-status-bar"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "c88db678-bfb5-419a-955e-41953e448ae9"
+      }
+    },
+    "owner": "devxnetx",
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/c88db678-bfb5-419a-955e-41953e448ae9"
+    }
   }
 }

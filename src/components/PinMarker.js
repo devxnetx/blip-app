@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 import { useTheme } from '../theme';
+import { timeAgo } from '../time';
 
 const CATEGORIES = {
   seeking: 'Търся',
@@ -15,16 +16,34 @@ function categoryLabel(id) {
   return CATEGORIES[id] || '';
 }
 
-export default function PinMarker({ pin, onPress, stackOffset = 0 }) {
+function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0 }) {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
+  const freeze = useRef(null);
+  const laidOut = useRef('');
+  const posted = timeAgo(pin.created_at, now);
+  const kind = [categoryLabel(pin.category), posted].filter(Boolean).join(' · ');
+  const layoutKey = `${pin.id}:${posted}:${pin.image_url || ''}:${stackOffset}:${stamp}`;
+
+  function paint() {
+    setTracking(true);
+    clearTimeout(freeze.current);
+    freeze.current = setTimeout(() => setTracking(false), pin.image_url ? 800 : 500);
+  }
+
+  function onLayout() {
+    if (laidOut.current === layoutKey) {
+      return;
+    }
+    laidOut.current = layoutKey;
+    paint();
+  }
 
   useEffect(() => {
-    setTracking(true);
-    const timer = setTimeout(() => setTracking(false), pin.image_url ? 700 : 350);
-    return () => clearTimeout(timer);
-  }, [stackOffset, pin.image_url, pin.message, pin.category, colors]);
+    paint();
+    return () => clearTimeout(freeze.current);
+  }, [stackOffset, pin.image_url, pin.message, pin.category, posted, stamp, colors]);
 
   return (
     <Marker
@@ -34,20 +53,18 @@ export default function PinMarker({ pin, onPress, stackOffset = 0 }) {
       zIndex={stackOffset + 1}
       onPress={onPress}
     >
-      <View style={styles.wrap} collapsable={false}>
+      <View style={styles.wrap} collapsable={false} onLayout={onLayout}>
         <View style={styles.bubble}>
           {pin.image_url ? (
             <Image
               source={{ uri: pin.image_url }}
               style={styles.thumb}
-              onLoad={() => setTracking(false)}
-              onError={() => setTracking(false)}
+              onLoad={paint}
+              onError={paint}
             />
           ) : null}
           <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
-          {categoryLabel(pin.category) ? (
-            <Text style={styles.category}>{categoryLabel(pin.category)}</Text>
-          ) : null}
+          {kind ? <Text numberOfLines={1} style={styles.category}>{kind}</Text> : null}
         </View>
         <View style={styles.tail} />
         {stackOffset > 0 ? <View style={{ height: stackOffset }} /> : null}
@@ -55,6 +72,17 @@ export default function PinMarker({ pin, onPress, stackOffset = 0 }) {
     </Marker>
   );
 }
+
+export default memo(PinMarker, (prev, next) => (
+  prev.pin.id === next.pin.id
+  && prev.pin.message === next.pin.message
+  && prev.pin.category === next.pin.category
+  && prev.pin.image_url === next.pin.image_url
+  && prev.pin.created_at === next.pin.created_at
+  && prev.stackOffset === next.stackOffset
+  && prev.stamp === next.stamp
+  && timeAgo(prev.pin.created_at, prev.now) === timeAgo(next.pin.created_at, next.now)
+));
 
 function createStyles(c) {
   return StyleSheet.create({

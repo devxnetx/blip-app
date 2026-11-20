@@ -1,4 +1,4 @@
-function cityPoint(latitude, longitude) {
+function cityPoint(latitude, longitude, city) {
   const lat = Number(latitude);
   const lng = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -7,7 +7,11 @@ function cityPoint(latitude, longitude) {
   if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
     return null;
   }
-  return { latitude: lat, longitude: lng };
+  return {
+    latitude: lat,
+    longitude: lng,
+    city: typeof city === 'string' ? city.trim() : '',
+  };
 }
 
 async function readCity(url, pick) {
@@ -29,9 +33,9 @@ async function readCity(url, pick) {
 export function lookupIpCity() {
   return readCity(
     'https://get.geojs.io/v1/ip/geo.json',
-    (body) => cityPoint(body.latitude, body.longitude),
+    (body) => cityPoint(body.latitude, body.longitude, body.city),
   ).then((point) => point || readCity(
     'https://ipwho.is/',
-    (body) => (body && body.success ? cityPoint(body.latitude, body.longitude) : null),
+    (body) => (body && body.success ? cityPoint(body.latitude, body.longitude, body.city) : null),
   ));
 }
