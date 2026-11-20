@@ -784,7 +784,7 @@ export default function MapScreen() {
     setReplyText('');
     setAuthorOnly(false);
 
-    if (!selected) {
+    if (!selected || selected.imported) {
       setReplies([]);
       setReplyError('');
       return undefined;
@@ -820,7 +820,7 @@ export default function MapScreen() {
 
   async function sendReply() {
     const text = replyText.trim();
-    if (!text || !selected || sendingReply) {
+    if (!text || !selected || selected.imported || sendingReply) {
       return;
     }
 
@@ -841,6 +841,9 @@ export default function MapScreen() {
   }
 
   function confirmReport(pin) {
+    if (pin?.imported) {
+      return;
+    }
     Alert.alert('Докладваш ли този пин?', 'Пет доклада от различни хора го махат.', [
       { text: 'Отказ', style: 'cancel' },
       { text: 'Докладвай', style: 'destructive', onPress: () => sendReport(pin) },
@@ -1208,6 +1211,7 @@ export default function MapScreen() {
                 </Text>
               ) : null}
               <Text style={styles.sheetHint}>{selected ? timeLeft(selected.expires_at, now) : ''}</Text>
+              {selected?.description ? <Text style={styles.story}>{selected.description}</Text> : null}
               {selected ? (
                 <View style={styles.shareRow}>
                   <Pressable onPress={() => copyPinLink(selected)} style={styles.shareButton}>
@@ -1232,11 +1236,11 @@ export default function MapScreen() {
                   ) : null}
                 </View>
               ))}
-              {selected?.mine ? (
+              {selected?.mine && !selected.imported ? (
                 <Pressable style={styles.remove} onPress={() => removePin(selected)}>
                   <Text style={styles.removeText}>Махни пина</Text>
                 </Pressable>
-              ) : (
+              ) : selected?.imported ? null : (
                 <>
                   {selected?.replied ? (
                     <Text style={styles.replySent}>Отговорът е изпратен.</Text>
@@ -1520,6 +1524,7 @@ function createStyles(c) {
     },
     sheetTitle: { fontSize: 22, fontWeight: '700', color: c.ink },
     sheetHint: { marginTop: 4, marginBottom: 14, color: c.muted },
+    story: { marginTop: 4, marginBottom: 14, color: c.muted, fontSize: 15, lineHeight: 21 },
     input: {
       minHeight: 72,
       borderRadius: 14,
