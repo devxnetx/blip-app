@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  Dimensions,
   TextInput,
   View,
 } from 'react-native';
@@ -26,7 +27,7 @@ import BootScreen from '../components/BootScreen';
 import CountMarker from '../components/CountMarker';
 import PinMarker from '../components/PinMarker';
 import ThemeSwitch from '../components/ThemeSwitch';
-import { groupPins, zoomRegion } from '../cluster';
+import { groupPins, regionForPinLoad, zoomRegion } from '../cluster';
 import { createPin, createReply, deletePin, fetchPins, fetchReplies, reportPin } from '../api';
 import { deviceId } from '../device';
 import { boxForRadius, formatDistance, kmBetween } from '../distance';
@@ -217,7 +218,10 @@ export default function MapScreen() {
     try {
       const device = deviceRef.current || await deviceId();
       deviceRef.current = device;
-      const rows = await fetchPins(nextRegion, device);
+      const rows = await fetchPins(
+        regionForPinLoad(nextRegion, Dimensions.get('window').height),
+        device,
+      );
       if (requestId !== requestRef.current) {
         return;
       }
@@ -969,7 +973,8 @@ export default function MapScreen() {
             key={pin.id}
             pin={pin}
             label={categoryLabel(pin.category)}
-            stackOffset={pin.stackOffset}
+            stackX={pin.stackX}
+            stackY={pin.stackY}
             onPress={() => setSelected(pin)}
             now={now}
             stamp={markerStamp}

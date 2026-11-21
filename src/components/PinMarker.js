@@ -4,7 +4,7 @@ import { Marker } from 'react-native-maps';
 import { useTheme } from '../theme';
 import { timeAgo, upcomingLabel } from '../time';
 
-function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0, label = '' }) {
+function PinMarker({ pin, onPress, stackX = 0, stackY = 0, now = Date.now(), stamp = 0, label = '' }) {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
@@ -12,7 +12,7 @@ function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0,
   const laidOut = useRef('');
   const posted = upcomingLabel(pin, now) || timeAgo(pin.created_at, now);
   const kind = [label, posted].filter(Boolean).join(' · ');
-  const layoutKey = `${pin.id}:${posted}:${label}:${pin.image_url || ''}:${stackOffset}:${stamp}`;
+  const layoutKey = `${pin.id}:${posted}:${label}:${pin.image_url || ''}:${stackX}:${stackY}:${stamp}`;
 
   function paint() {
     setTracking(true);
@@ -31,33 +31,37 @@ function PinMarker({ pin, onPress, stackOffset = 0, now = Date.now(), stamp = 0,
   useEffect(() => {
     paint();
     return () => clearTimeout(freeze.current);
-  }, [stackOffset, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
+  }, [stackX, stackY, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
 
   return (
     <Marker
       coordinate={{ latitude: pin.latitude, longitude: pin.longitude }}
       anchor={{ x: 0.5, y: 1 }}
       tracksViewChanges={tracking}
-      zIndex={stackOffset + 1}
+      zIndex={stackY + (stackX > 0 ? 1 : 0) + 1}
       onPress={onPress}
     >
-      <View style={styles.wrap} collapsable={false} pointerEvents="box-none" onLayout={onLayout}>
-        <View style={styles.bubble}>
-          {pin.image_url ? (
-            <Image
-              source={{ uri: pin.image_url }}
-              style={styles.thumb}
-              onLoad={paint}
-              onError={paint}
-            />
-          ) : null}
-          <View style={styles.copy}>
-            <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
-            {kind ? <Text numberOfLines={2} style={styles.category}>{kind}</Text> : null}
+      <View style={styles.shift} collapsable={false} pointerEvents="box-none">
+        {stackX > 0 ? <View pointerEvents="none" style={{ width: stackX * 2 }} /> : null}
+        <View style={styles.wrap} collapsable={false} pointerEvents="box-none" onLayout={onLayout}>
+          <View style={styles.bubble}>
+            {pin.image_url ? (
+              <Image
+                source={{ uri: pin.image_url }}
+                style={styles.thumb}
+                onLoad={paint}
+                onError={paint}
+              />
+            ) : null}
+            <View style={styles.copy}>
+              <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
+              {kind ? <Text numberOfLines={2} style={styles.category}>{kind}</Text> : null}
+            </View>
           </View>
+          <View style={styles.tail} />
+          {stackY > 0 ? <View pointerEvents="none" style={{ height: stackY }} /> : null}
         </View>
-        <View style={styles.tail} />
-        {stackOffset > 0 ? <View pointerEvents="none" style={{ height: stackOffset }} /> : null}
+        {stackX < 0 ? <View pointerEvents="none" style={{ width: -stackX * 2 }} /> : null}
       </View>
     </Marker>
   );
@@ -72,7 +76,8 @@ export default memo(PinMarker, (prev, next) => (
   && prev.pin.created_at === next.pin.created_at
   && prev.pin.kind === next.pin.kind
   && prev.pin.starts_at === next.pin.starts_at
-  && prev.stackOffset === next.stackOffset
+  && prev.stackX === next.stackX
+  && prev.stackY === next.stackY
   && prev.stamp === next.stamp
   && (upcomingLabel(prev.pin, prev.now) || timeAgo(prev.pin.created_at, prev.now))
     === (upcomingLabel(next.pin, next.now) || timeAgo(next.pin.created_at, next.now))
@@ -80,6 +85,7 @@ export default memo(PinMarker, (prev, next) => (
 
 function createStyles(c) {
   return StyleSheet.create({
+    shift: { flexDirection: 'row', alignItems: 'flex-end' },
     wrap: { alignItems: 'center', maxWidth: 240 },
     bubble: {
       flexDirection: 'row',
