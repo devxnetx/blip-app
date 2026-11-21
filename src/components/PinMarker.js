@@ -4,7 +4,7 @@ import { Marker } from 'react-native-maps';
 import { useTheme } from '../theme';
 import { timeAgo, upcomingLabel } from '../time';
 
-function PinMarker({ pin, onPress, stackX = 0, stackY = 0, now = Date.now(), stamp = 0, label = '' }) {
+function PinMarker({ pin, onPress, stackX = 0, stackY = 0, tail = 'center', now = Date.now(), stamp = 0, label = '' }) {
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
@@ -12,7 +12,7 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, now = Date.now(), sta
   const laidOut = useRef('');
   const posted = upcomingLabel(pin, now) || timeAgo(pin.created_at, now);
   const kind = [label, posted].filter(Boolean).join(' · ');
-  const layoutKey = `${pin.id}:${posted}:${label}:${pin.image_url || ''}:${stackX}:${stackY}:${stamp}`;
+  const layoutKey = `${pin.id}:${posted}:${label}:${pin.image_url || ''}:${stackX}:${stackY}:${tail}:${stamp}`;
 
   function paint() {
     setTracking(true);
@@ -31,7 +31,7 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, now = Date.now(), sta
   useEffect(() => {
     paint();
     return () => clearTimeout(freeze.current);
-  }, [stackX, stackY, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
+  }, [stackX, stackY, tail, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
 
   return (
     <Marker
@@ -44,21 +44,34 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, now = Date.now(), sta
       <View style={styles.shift} collapsable={false} pointerEvents="box-none">
         {stackX > 0 ? <View pointerEvents="none" style={{ width: stackX * 2 }} /> : null}
         <View style={styles.wrap} collapsable={false} pointerEvents="box-none" onLayout={onLayout}>
-          <View style={styles.bubble}>
-            {pin.image_url ? (
-              <Image
-                source={{ uri: pin.image_url }}
-                style={styles.thumb}
-                onLoad={paint}
-                onError={paint}
-              />
-            ) : null}
-            <View style={styles.copy}>
-              <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
-              {kind ? <Text numberOfLines={2} style={styles.category}>{kind}</Text> : null}
+          <View
+            style={[
+              styles.card,
+              tail === 'right' && styles.cardRight,
+              tail === 'left' && styles.cardLeft,
+            ]}
+            collapsable={false}
+          >
+            <View style={styles.bubble}>
+              {pin.image_url ? (
+                <Image
+                  source={{ uri: pin.image_url }}
+                  style={styles.thumb}
+                  onLoad={paint}
+                  onError={paint}
+                />
+              ) : null}
+              <View style={styles.copy}>
+                <Text numberOfLines={2} style={styles.message}>{pin.message}</Text>
+                {kind ? <Text numberOfLines={2} style={styles.category}>{kind}</Text> : null}
+              </View>
             </View>
+            <View style={[
+              styles.tail,
+              tail === 'right' && styles.tailRight,
+              tail === 'left' && styles.tailLeft,
+            ]} />
           </View>
-          <View style={styles.tail} />
           {stackY > 0 ? <View pointerEvents="none" style={{ height: stackY }} /> : null}
         </View>
         {stackX < 0 ? <View pointerEvents="none" style={{ width: -stackX * 2 }} /> : null}
@@ -78,6 +91,7 @@ export default memo(PinMarker, (prev, next) => (
   && prev.pin.starts_at === next.pin.starts_at
   && prev.stackX === next.stackX
   && prev.stackY === next.stackY
+  && prev.tail === next.tail
   && prev.stamp === next.stamp
   && (upcomingLabel(prev.pin, prev.now) || timeAgo(prev.pin.created_at, prev.now))
     === (upcomingLabel(next.pin, next.now) || timeAgo(next.pin.created_at, next.now))
@@ -87,6 +101,9 @@ function createStyles(c) {
   return StyleSheet.create({
     shift: { flexDirection: 'row', alignItems: 'flex-end' },
     wrap: { alignItems: 'center', maxWidth: 240 },
+    card: { alignItems: 'center', maxWidth: 240 },
+    cardRight: { alignItems: 'flex-end' },
+    cardLeft: { alignItems: 'flex-start' },
     bubble: {
       flexDirection: 'row',
       alignItems: 'flex-start',
@@ -116,5 +133,7 @@ function createStyles(c) {
       borderRightColor: 'transparent',
       borderTopColor: c.pin,
     },
+    tailRight: { marginRight: 14 },
+    tailLeft: { marginLeft: 14 },
   });
 }

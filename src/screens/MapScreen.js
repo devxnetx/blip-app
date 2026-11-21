@@ -975,6 +975,7 @@ export default function MapScreen() {
             label={categoryLabel(pin.category)}
             stackX={pin.stackX}
             stackY={pin.stackY}
+            tail={pin.tail}
             onPress={() => setSelected(pin)}
             now={now}
             stamp={markerStamp}

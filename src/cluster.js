@@ -17,11 +17,18 @@ function sameSpot(a, b) {
     && Math.abs(a.longitude - b.longitude) < SAME_SPOT;
 }
 
+function tailFor(index, count) {
+  if (count < 2) {
+    return 'center';
+  }
+  return index % 2 === 0 ? 'right' : 'left';
+}
+
 function placeGroup(group) {
   if (group.length < STACK_SIDE_BY_SIDE) {
     let y = 0;
-    return group.map((pin) => {
-      const placed = { ...pin, stackX: 0, stackY: y };
+    return group.map((pin, index) => {
+      const placed = { ...pin, stackX: 0, stackY: y, tail: tailFor(index, group.length) };
       y += pinHeight(pin);
       return placed;
     });
@@ -34,10 +41,10 @@ function placeGroup(group) {
     const right = group[index + 1];
     const rowHeight = Math.max(pinHeight(left), right ? pinHeight(right) : 0);
     if (!right) {
-      placed.push({ ...left, stackX: 0, stackY: y });
+      placed.push({ ...left, stackX: 0, stackY: y, tail: tailFor(index, group.length) });
     } else {
-      placed.push({ ...left, stackX: -STACK_SHIFT, stackY: y });
-      placed.push({ ...right, stackX: STACK_SHIFT, stackY: y });
+      placed.push({ ...left, stackX: -STACK_SHIFT, stackY: y, tail: tailFor(index, group.length) });
+      placed.push({ ...right, stackX: STACK_SHIFT, stackY: y, tail: tailFor(index + 1, group.length) });
     }
     y += rowHeight;
   }
@@ -103,7 +110,7 @@ export function groupPins(pins, region) {
   const singles = [];
   cells.forEach((group, key) => {
     if (group.length === 1) {
-      singles.push({ ...group[0], stackX: 0, stackY: 0 });
+      singles.push({ ...group[0], stackX: 0, stackY: 0, tail: 'center' });
       return;
     }
     const latitude = group.reduce((sum, pin) => sum + pin.latitude, 0) / group.length;
