@@ -27,7 +27,7 @@ import BootScreen from '../components/BootScreen';
 import CountMarker from '../components/CountMarker';
 import PinMarker from '../components/PinMarker';
 // import ThemeSwitch from '../components/ThemeSwitch';
-import { groupPins, regionForPinLoad, zoomRegion } from '../cluster';
+import { groupPins, nearbyClusters, openClusterRegion, projectCluster, regionForPinLoad, zoomRegion } from '../cluster';
 import { createPin, createReply, deletePin, fetchCityCounts, fetchPins, fetchReplies, reportPin } from '../api';
 import { deviceId } from '../device';
 import { boxForRadius, formatDistance, kmBetween } from '../distance';
@@ -95,7 +95,11 @@ function spreadEdges(chips) {
       const dx = item.left - prev.left;
       const dy = item.top - prev.top;
       const dist = Math.hypot(dx, dy);
-      if (dist >= 46 || dist === 0) {
+      if (dist === 0) {
+        item.top += 50;
+        continue;
+      }
+      if (dist >= 46) {
         continue;
       }
       const push = (46 - dist) / 2;
@@ -263,7 +267,6 @@ export default function MapScreen() {
   const [edges, setEdges] = useState([]);
   const pinsRef = useRef(pins);
   const mapSizeRef = useRef({ width: Dimensions.get('window').width, height: Dimensions.get('window').height });
-  const edgeToken = useRef(0);
   const edgeTick = useRef(0);
   pinsRef.current = pins;
   const [radiusKm, setRadiusKm] = useState(5);
@@ -989,51 +992,26 @@ export default function MapScreen() {
     }
   }
 
-  const refreshEdges = useCallback(async (nextRegion) => {
+  const refreshEdges = useCallback((nextRegion) => {
     const regionNow = nextRegion || regionRef.current;
-    const token = ++edgeToken.current;
-    const map = mapRef.current;
     const { width, height } = mapSizeRef.current;
-    if (
-      !map?.pointForCoordinate
-      || !regionNow
-      || width < 20
-      || height < 20
-      || regionNow.latitudeDelta <= 0.012
-      || regionNow.latitudeDelta > 0.16
-    ) {
-      if (token === edgeToken.current) {
-        setEdges([]);
-      }
+    if (!regionNow || width < 20 || height < 20 || regionNow.latitudeDelta > 0.2) {
+      setEdges([]);
       return;
     }
 
     const pad = {
-      top: insets.top + 12,
-      right: 70,
-      bottom: insets.bottom + 168,
-      left: 12,
+      top: insets.top + 58,
+      right: 36,
+      bottom: insets.bottom + 150,
+      left: 36,
     };
-    const clusters = groupPins(pinsRef.current, regionNow).clusters;
-    const points = await Promise.all(clusters.map(async (cluster) => {
-      try {
-        const point = await map.pointForCoordinate({
-          latitude: cluster.latitude,
-          longitude: cluster.longitude,
-        });
-        return { cluster, point };
-      } catch {
-        return { cluster, point: null };
-      }
-    }));
-    if (token !== edgeToken.current) {
-      return;
-    }
-    const chips = [];
     const cx = width / 2;
     const cy = height / 2;
-    points.forEach(({ cluster, point }) => {
-      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    const chips = [];
+    nearbyClusters(pinsRef.current, regionNow).forEach((cluster) => {
+      const point = projectCluster(cluster, regionNow, width, height, mapHeadingRef.current);
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
         return;
       }
       const inside = point.x >= pad.left && point.x <= width - pad.right
@@ -1043,9 +1021,6 @@ export default function MapScreen() {
       }
       const dx = point.x - cx;
       const dy = point.y - cy;
-      if (Math.abs(dx) > width * 1.45 || Math.abs(dy) > height * 1.45) {
-        return;
-      }
       const scaleX = dx === 0 ? Infinity : ((dx > 0 ? width - pad.right : pad.left) - cx) / dx;
       const scaleY = dy === 0 ? Infinity : ((dy > 0 ? height - pad.bottom : pad.top) - cy) / dy;
       const scale = Math.min(scaleX, scaleY);
@@ -1057,13 +1032,12 @@ export default function MapScreen() {
         count: cluster.count,
         left: cx + dx * scale,
         top: cy + dy * scale,
-        angle: Math.atan2(dy, dx),
+        distance: Math.hypot(dx, dy),
         cluster,
       });
     });
-    if (token === edgeToken.current) {
-      setEdges(spreadEdges(chips));
-    }
+    const closest = chips.sort((a, b) => a.distance - b.distance).slice(0, 6);
+    setEdges(spreadEdges(closest));
   }, [insets.bottom, insets.top]);
 
   useEffect(() => {
@@ -1165,10 +1139,9 @@ export default function MapScreen() {
           <Pressable
             key={edge.id}
             style={[styles.edgeChip, { left: edge.left, top: edge.top }]}
-            onPress={() => moveTo(zoomRegion(regionRef.current, edge.cluster))}
-            accessibilityLabel={`${edge.count} пина извън екрана`}
+            onPress={() => moveTo(openClusterRegion(regionRef.current, edge.cluster))}
+            accessibilityLabel={`${edge.count} събития наблизо`}
           >
-            <View style={[styles.edgeArrow, { transform: [{ rotate: `${edge.angle}rad` }] }]} />
             <Text style={styles.edgeText}>({edge.count})</Text>
           </Pressable>
         ))}
@@ -1662,30 +1635,18 @@ function createStyles(c) {
     },
     cityChoiceText: { flex: 1, color: c.ink, fontSize: 18, fontWeight: '700' },
     cityCount: { color: c.muted, fontSize: 16, fontWeight: '700' },
-    edges: { ...StyleSheet.absoluteFillObject, zIndex: 5 },
+    edges: { ...StyleSheet.absoluteFillObject, zIndex: 40 },
     edgeChip: {
       position: 'absolute',
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      height: 40,
-      paddingLeft: 8,
-      paddingRight: 10,
-      borderRadius: 20,
+      width: 46,
+      height: 46,
+      borderRadius: 23,
       backgroundColor: c.pin,
       borderWidth: 2,
       borderColor: c.countBorder,
-      transform: [{ translateX: -36 }, { translateY: -20 }],
-    },
-    edgeArrow: {
-      width: 0,
-      height: 0,
-      borderTopWidth: 6,
-      borderBottomWidth: 6,
-      borderLeftWidth: 9,
-      borderTopColor: 'transparent',
-      borderBottomColor: 'transparent',
-      borderLeftColor: c.pinText,
+      alignItems: 'center',
+      justifyContent: 'center',
+      transform: [{ translateX: -23 }, { translateY: -23 }],
     },
     edgeText: { color: c.pinText, fontWeight: '700', fontSize: 15 },
     themePill: { position: 'absolute', left: 16 },

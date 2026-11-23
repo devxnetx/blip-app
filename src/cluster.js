@@ -75,12 +75,16 @@ export function regionForPinLoad(region, screenHeight) {
 
   if (region.latitudeDelta <= REVEAL_DELTA) {
     const height = Math.max(screenHeight || 800, 1);
-    const pad = region.latitudeDelta * (STACK_FETCH_PAD_PX / height);
+    const northPad = region.latitudeDelta * (STACK_FETCH_PAD_PX / height);
+    const lngDelta = region.longitudeDelta || region.latitudeDelta;
+    const latPad = Math.max(0.03, northPad);
+    const lngPad = Math.max(0.03, lngDelta);
 
     return {
       ...region,
-      latitude: region.latitude + pad / 2,
-      latitudeDelta: region.latitudeDelta + pad,
+      latitude: region.latitude + northPad / 2,
+      latitudeDelta: region.latitudeDelta + latPad * 2,
+      longitudeDelta: lngDelta + lngPad * 2,
     };
   }
 
@@ -144,6 +148,61 @@ export function groupPins(pins, region) {
   });
 
   return { clusters, singles };
+}
+
+export function nearbyClusters(pins, region) {
+  if (!pins.length || !region || !region.latitudeDelta) {
+    return [];
+  }
+
+  const lngDelta = region.longitudeDelta || region.latitudeDelta;
+  const zoomedIn = region.latitudeDelta <= REVEAL_DELTA;
+  const clusterDelta = zoomedIn ? 0.028 : region.latitudeDelta;
+  const clusterLng = zoomedIn ? 0.028 * (lngDelta / region.latitudeDelta) : lngDelta;
+  const grouped = groupPins(pins, {
+    latitude: region.latitude,
+    longitude: region.longitude,
+    latitudeDelta: clusterDelta,
+    longitudeDelta: clusterLng,
+  });
+  const halfLat = region.latitudeDelta / 2;
+  const halfLng = lngDelta / 2;
+  const marginLat = Math.min(Math.max(region.latitudeDelta, 0.028), 0.06);
+  const marginLng = Math.min(Math.max(lngDelta, 0.028), 0.06);
+
+  return grouped.clusters.filter((cluster) => (
+    Math.abs(cluster.latitude - region.latitude) <= halfLat + marginLat
+    && Math.abs(cluster.longitude - region.longitude) <= halfLng + marginLng
+  ));
+}
+
+export function projectCluster(cluster, region, width, height, heading) {
+  const lngDelta = region.longitudeDelta || region.latitudeDelta;
+  const east = ((cluster.longitude - region.longitude) / lngDelta) * width;
+  const south = ((region.latitude - cluster.latitude) / region.latitudeDelta) * height;
+  const turn = (-(heading || 0) * Math.PI) / 180;
+  const cos = Math.cos(turn);
+  const sin = Math.sin(turn);
+
+  return {
+    x: width / 2 + east * cos - south * sin,
+    y: height / 2 + east * sin + south * cos,
+  };
+}
+
+export function openClusterRegion(region, cluster) {
+  const span = Math.max(cluster.latitudeSpan || 0, cluster.longitudeSpan || 0);
+  const latitudeDelta = Math.min(Math.max(span * 2.4, 0.008), REVEAL_DELTA - 0.001);
+  const ratio = region && region.longitudeDelta && region.latitudeDelta
+    ? region.longitudeDelta / region.latitudeDelta
+    : 1;
+
+  return {
+    latitude: cluster.latitude,
+    longitude: cluster.longitude,
+    latitudeDelta,
+    longitudeDelta: latitudeDelta * ratio,
+  };
 }
 
 export function zoomRegion(region, cluster) {

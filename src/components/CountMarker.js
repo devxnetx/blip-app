@@ -19,7 +19,7 @@ export default function CountMarker({ cluster, onPress }) {
       coordinate={{ latitude: cluster.latitude, longitude: cluster.longitude }}
       anchor={{ x: 0.5, y: 0.5 }}
       tracksViewChanges={tracking}
-      zIndex={3}
+      zIndex={9000}
       onPress={onPress}
     >
       <View style={styles.count} collapsable={false}>
