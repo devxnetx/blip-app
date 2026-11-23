@@ -14,6 +14,23 @@ async function readError(response) {
   }
 }
 
+export async function fetchCityCounts() {
+  const response = await fetch(`${API_URL}/api/cities`, {
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  const body = await response.json();
+  const counts = {};
+  (body.cities || []).forEach((city) => {
+    counts[city.name] = Number(city.count) || 0;
+  });
+  return counts;
+}
+
 export async function fetchPins(region, device) {
   const params = new URLSearchParams({
     north: String(region.latitude + region.latitudeDelta / 2),

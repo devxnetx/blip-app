@@ -26,9 +26,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import BootScreen from '../components/BootScreen';
 import CountMarker from '../components/CountMarker';
 import PinMarker from '../components/PinMarker';
-import ThemeSwitch from '../components/ThemeSwitch';
+// import ThemeSwitch from '../components/ThemeSwitch';
 import { groupPins, regionForPinLoad, zoomRegion } from '../cluster';
-import { createPin, createReply, deletePin, fetchPins, fetchReplies, reportPin } from '../api';
+import { createPin, createReply, deletePin, fetchCityCounts, fetchPins, fetchReplies, reportPin } from '../api';
 import { deviceId } from '../device';
 import { boxForRadius, formatDistance, kmBetween } from '../distance';
 import { notifyLocal } from '../notify';
@@ -51,6 +51,64 @@ const GPS_ZOOM = 0.01;
 const CITY_ZOOM = 0.04;
 const CITY_PICK_ZOOM = 0.022;
 const PIN_FOCUS_ZOOM = 0.008;
+
+function pinInRegion(pin, region) {
+  if (!region || !region.latitudeDelta || pin.latitude == null || pin.longitude == null) {
+    return false;
+  }
+  const halfLat = region.latitudeDelta / 2;
+  const halfLng = (region.longitudeDelta || region.latitudeDelta) / 2;
+  return Math.abs(pin.latitude - region.latitude) <= halfLat
+    && Math.abs(pin.longitude - region.longitude) <= halfLng;
+}
+
+function mergeLoaded(existing, incoming, box, now) {
+  const ids = new Set(incoming.map((pin) => pin.id));
+  const byId = new Map();
+
+  existing.forEach((pin) => {
+    if (pin.latitude == null || pin.longitude == null) {
+      return;
+    }
+    if (new Date(pin.expires_at).getTime() <= now) {
+      return;
+    }
+    if (pinInRegion(pin, box) && !ids.has(pin.id)) {
+      return;
+    }
+    byId.set(pin.id, pin);
+  });
+
+  incoming.forEach((pin) => {
+    byId.set(pin.id, { ...byId.get(pin.id), ...pin });
+  });
+
+  return [...byId.values()];
+}
+
+function spreadEdges(chips) {
+  const sorted = chips.map((chip) => ({ ...chip })).sort((a, b) => a.angle - b.angle);
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (let index = 1; index < sorted.length; index += 1) {
+      const prev = sorted[index - 1];
+      const item = sorted[index];
+      const dx = item.left - prev.left;
+      const dy = item.top - prev.top;
+      const dist = Math.hypot(dx, dy);
+      if (dist >= 46 || dist === 0) {
+        continue;
+      }
+      const push = (46 - dist) / 2;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      prev.left -= nx * push;
+      prev.top -= ny * push;
+      item.left += nx * push;
+      item.top += ny * push;
+    }
+  }
+  return sorted;
+}
 
 const DURATIONS = [
   { id: '5m', label: '5 мин' },
@@ -200,7 +258,14 @@ export default function MapScreen() {
   const [reporting, setReporting] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [citiesOpen, setCitiesOpen] = useState(false);
+  const [cityCounts, setCityCounts] = useState({});
   const [cityQuery, setCityQuery] = useState('');
+  const [edges, setEdges] = useState([]);
+  const pinsRef = useRef(pins);
+  const mapSizeRef = useRef({ width: Dimensions.get('window').width, height: Dimensions.get('window').height });
+  const edgeToken = useRef(0);
+  const edgeTick = useRef(0);
+  pinsRef.current = pins;
   const [radiusKm, setRadiusKm] = useState(5);
   const [nearby, setNearby] = useState([]);
   const [nearbyLoading, setNearbyLoading] = useState(false);
@@ -218,19 +283,29 @@ export default function MapScreen() {
     try {
       const device = deviceRef.current || await deviceId();
       deviceRef.current = device;
-      const rows = await fetchPins(
-        regionForPinLoad(nextRegion, Dimensions.get('window').height),
-        device,
-      );
+      const box = regionForPinLoad(nextRegion, Dimensions.get('window').height);
+      const rows = await fetchPins(box, device);
       if (requestId !== requestRef.current) {
         return;
       }
-      setPins(rows.filter((pin) => (
+      const now = Date.now();
+      const incoming = rows.filter((pin) => (
         pin.latitude != null
         && pin.longitude != null
         && pin.kind !== 'unassigned'
-        && new Date(pin.expires_at).getTime() > Date.now()
-      )));
+        && new Date(pin.expires_at).getTime() > now
+      ));
+      setPins((current) => mergeLoaded(current, incoming, box, now));
+      setSelected((open) => {
+        if (!open) {
+          return open;
+        }
+        const fresh = incoming.find((pin) => pin.id === open.id);
+        if (fresh) {
+          return { ...open, ...fresh };
+        }
+        return pinInRegion(open, box) ? null : open;
+      });
       setError('');
     } catch {
       if (requestId === requestRef.current) {
@@ -914,6 +989,87 @@ export default function MapScreen() {
     }
   }
 
+  const refreshEdges = useCallback(async (nextRegion) => {
+    const regionNow = nextRegion || regionRef.current;
+    const token = ++edgeToken.current;
+    const map = mapRef.current;
+    const { width, height } = mapSizeRef.current;
+    if (
+      !map?.pointForCoordinate
+      || !regionNow
+      || width < 20
+      || height < 20
+      || regionNow.latitudeDelta <= 0.012
+      || regionNow.latitudeDelta > 0.16
+    ) {
+      if (token === edgeToken.current) {
+        setEdges([]);
+      }
+      return;
+    }
+
+    const pad = {
+      top: insets.top + 12,
+      right: 70,
+      bottom: insets.bottom + 168,
+      left: 12,
+    };
+    const clusters = groupPins(pinsRef.current, regionNow).clusters;
+    const points = await Promise.all(clusters.map(async (cluster) => {
+      try {
+        const point = await map.pointForCoordinate({
+          latitude: cluster.latitude,
+          longitude: cluster.longitude,
+        });
+        return { cluster, point };
+      } catch {
+        return { cluster, point: null };
+      }
+    }));
+    if (token !== edgeToken.current) {
+      return;
+    }
+    const chips = [];
+    const cx = width / 2;
+    const cy = height / 2;
+    points.forEach(({ cluster, point }) => {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        return;
+      }
+      const inside = point.x >= pad.left && point.x <= width - pad.right
+        && point.y >= pad.top && point.y <= height - pad.bottom;
+      if (inside) {
+        return;
+      }
+      const dx = point.x - cx;
+      const dy = point.y - cy;
+      if (Math.abs(dx) > width * 1.45 || Math.abs(dy) > height * 1.45) {
+        return;
+      }
+      const scaleX = dx === 0 ? Infinity : ((dx > 0 ? width - pad.right : pad.left) - cx) / dx;
+      const scaleY = dy === 0 ? Infinity : ((dy > 0 ? height - pad.bottom : pad.top) - cy) / dy;
+      const scale = Math.min(scaleX, scaleY);
+      if (!Number.isFinite(scale) || scale <= 0 || scale >= 1) {
+        return;
+      }
+      chips.push({
+        id: String(cluster.id),
+        count: cluster.count,
+        left: cx + dx * scale,
+        top: cy + dy * scale,
+        angle: Math.atan2(dy, dx),
+        cluster,
+      });
+    });
+    if (token === edgeToken.current) {
+      setEdges(spreadEdges(chips));
+    }
+  }, [insets.bottom, insets.top]);
+
+  useEffect(() => {
+    refreshEdges(regionRef.current);
+  }, [pins, refreshEdges]);
+
   function goToCity(city) {
     userMoved.current = true;
     const next = {
@@ -944,7 +1100,14 @@ export default function MapScreen() {
   }
 
   return (
-    <View style={styles.fill}>
+    <View
+      style={styles.fill}
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+        mapSizeRef.current = { width, height };
+        refreshEdges(regionRef.current);
+      }}
+    >
       <MapView
         ref={mapRef}
         style={styles.fill}
@@ -955,10 +1118,18 @@ export default function MapScreen() {
         onPanDrag={() => {
           userMoved.current = true;
         }}
-        onRegionChange={syncMapHeading}
+        onRegionChange={(next) => {
+          syncMapHeading();
+          const tick = Date.now();
+          if (tick - edgeTick.current > 90) {
+            edgeTick.current = tick;
+            refreshEdges(next);
+          }
+        }}
         onRegionChangeComplete={(next) => {
           syncMapHeading();
           scheduleLoad(next);
+          refreshEdges(next);
         }}
       >
         {mapItems.clusters.map((cluster) => (
@@ -989,6 +1160,20 @@ export default function MapScreen() {
         ) : null}
       </MapView>
 
+      <View style={styles.edges} pointerEvents="box-none">
+        {edges.map((edge) => (
+          <Pressable
+            key={edge.id}
+            style={[styles.edgeChip, { left: edge.left, top: edge.top }]}
+            onPress={() => moveTo(zoomRegion(regionRef.current, edge.cluster))}
+            accessibilityLabel={`${edge.count} пина извън екрана`}
+          >
+            <View style={[styles.edgeArrow, { transform: [{ rotate: `${edge.angle}rad` }] }]} />
+            <Text style={styles.edgeText}>({edge.count})</Text>
+          </Pressable>
+        ))}
+      </View>
+
       <Text style={[styles.credit, { top: insets.top + 10 }]}>Карта: Apple</Text>
 
       {notice ? (
@@ -1008,15 +1193,15 @@ export default function MapScreen() {
         <Pressable style={[styles.banner, { top: insets.top + (notice ? 118 : 36) }]} onPress={() => load(regionRef.current)}>
           <Text style={styles.bannerText}>{error} Натисни, за да опиташ пак.</Text>
         </Pressable>
-      ) : pins.length === 0 && !notice ? (
+      ) : !pins.some((pin) => pinInRegion(pin, region)) && !notice ? (
         <View style={[styles.hint, { top: insets.top + 36 }]} pointerEvents="none">
           <Text style={styles.hintText}>Още няма нищо наблизо. „Нов пин“ пуска бележка на това място.</Text>
         </View>
       ) : null}
 
-      <View style={[styles.themePill, { bottom: insets.bottom + 74 }]}>
+      {/* <View style={[styles.themePill, { bottom: insets.bottom + 74 }]}>
         <ThemeSwitch compact />
-      </View>
+      </View> */}
 
       <Pressable
         style={[styles.locate, { bottom: insets.bottom + 130 }]}
@@ -1049,6 +1234,7 @@ export default function MapScreen() {
           onPress={() => {
             setCityQuery('');
             setCitiesOpen(true);
+            fetchCityCounts().then(setCityCounts).catch(() => {});
           }}
         >
           <Text style={styles.citiesButtonText}>Градове</Text>
@@ -1066,7 +1252,7 @@ export default function MapScreen() {
               <Text style={styles.photoButtonText}>Затвори</Text>
             </Pressable>
           </View>
-          <ThemeSwitch />
+          {/* <ThemeSwitch /> */}
           <TextInput
             value={cityQuery}
             onChangeText={setCityQuery}
@@ -1096,6 +1282,9 @@ export default function MapScreen() {
                 }}
               >
                 <Text style={styles.cityChoiceText}>{item.name}</Text>
+                {cityCounts[item.name] == null ? null : (
+                  <Text style={styles.cityCount}>({cityCounts[item.name]})</Text>
+                )}
               </Pressable>
             )}
           />
@@ -1110,7 +1299,7 @@ export default function MapScreen() {
               <Text style={styles.photoButtonText}>Затвори</Text>
             </Pressable>
           </View>
-          <ThemeSwitch />
+          {/* <ThemeSwitch /> */}
           <Text style={styles.radiusLabel}>{Math.round(radiusKm)} км</Text>
           <Slider
             style={styles.slider}
@@ -1272,21 +1461,22 @@ export default function MapScreen() {
           <Pressable style={styles.sheetBackdrop} onPress={() => setSelected(null)} />
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
             <ScrollView keyboardShouldPersistTaps="handled">
-              <View style={styles.detailRow}>
-                {selected?.image_url ? (
-                  <Image source={{ uri: selected.image_url }} style={styles.detailImage} />
-                ) : null}
-                <View style={styles.detailInfo}>
-                  <Text style={styles.sheetTitle}>{selected?.message}</Text>
-                  {selected ? (
-                    <Text style={styles.listCategory}>
-                      {[categoryLabel(selected.category), timeAgo(selected.created_at, now)].filter(Boolean).join(' · ')}
-                    </Text>
-                  ) : null}
-                  <Text style={styles.sheetHint}>{selected ? (upcomingLabel(selected, now) || timeLeft(selected.expires_at, now)) : ''}</Text>
-                  {selected?.description ? <Text style={styles.story}>{selected.description}</Text> : null}
-                </View>
+              <View style={styles.pinHeadRow}>
+                <Text style={[styles.sheetTitle, styles.pinTitle]}>{selected?.message}</Text>
+                <Pressable onPress={() => setSelected(null)} hitSlop={8} accessibilityLabel="Затвори">
+                  <Text style={styles.pinClose}>×</Text>
+                </Pressable>
               </View>
+              {selected ? (
+                <Text style={styles.pinMeta}>
+                  {[categoryLabel(selected.category), timeAgo(selected.created_at, now)].filter(Boolean).join(' · ')}
+                </Text>
+              ) : null}
+              {selected?.image_url ? (
+                <Image source={{ uri: selected.image_url }} style={styles.detailImage} resizeMode="cover" />
+              ) : null}
+              <Text style={styles.sheetHint}>{selected ? (upcomingLabel(selected, now) || timeLeft(selected.expires_at, now)) : ''}</Text>
+              {selected?.description ? <Text style={styles.story}>{selected.description}</Text> : null}
               {selected ? (
                 <View style={styles.shareRow}>
                   <Pressable onPress={() => copyPinLink(selected)} style={styles.shareButton}>
@@ -1462,11 +1652,42 @@ function createStyles(c) {
       color: c.ink,
     },
     cityChoice: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
       paddingVertical: 14,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: c.line,
     },
-    cityChoiceText: { color: c.ink, fontSize: 18, fontWeight: '700' },
+    cityChoiceText: { flex: 1, color: c.ink, fontSize: 18, fontWeight: '700' },
+    cityCount: { color: c.muted, fontSize: 16, fontWeight: '700' },
+    edges: { ...StyleSheet.absoluteFillObject, zIndex: 5 },
+    edgeChip: {
+      position: 'absolute',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      height: 40,
+      paddingLeft: 8,
+      paddingRight: 10,
+      borderRadius: 20,
+      backgroundColor: c.pin,
+      borderWidth: 2,
+      borderColor: c.countBorder,
+      transform: [{ translateX: -36 }, { translateY: -20 }],
+    },
+    edgeArrow: {
+      width: 0,
+      height: 0,
+      borderTopWidth: 6,
+      borderBottomWidth: 6,
+      borderLeftWidth: 9,
+      borderTopColor: 'transparent',
+      borderBottomColor: 'transparent',
+      borderLeftColor: c.pinText,
+    },
+    edgeText: { color: c.pinText, fontWeight: '700', fontSize: 15 },
     themePill: { position: 'absolute', left: 16 },
     locate: {
       position: 'absolute',
@@ -1597,7 +1818,11 @@ function createStyles(c) {
       padding: 20,
       maxHeight: '80%',
     },
-    sheetTitle: { fontSize: 22, fontWeight: '700', color: c.ink },
+    sheetTitle: { fontSize: 18, fontWeight: '700', color: c.ink, lineHeight: 24 },
+    pinHeadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+    pinTitle: { flex: 1 },
+    pinClose: { fontSize: 28, lineHeight: 28, color: c.ink, marginTop: -4 },
+    pinMeta: { marginTop: 4, marginBottom: 12, color: c.muted, fontSize: 13, fontWeight: '600' },
     sheetHint: { marginTop: 4, marginBottom: 14, color: c.muted },
     story: { marginTop: 4, marginBottom: 14, color: c.muted, fontSize: 15, lineHeight: 21 },
     input: {
@@ -1613,9 +1838,7 @@ function createStyles(c) {
     count: { alignSelf: 'flex-end', marginTop: 4, color: c.faint, fontSize: 12 },
     photoRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
     preview: { width: 72, height: 72, borderRadius: 10, marginTop: 12, backgroundColor: c.thumb },
-    detailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
-    detailInfo: { flex: 1, minWidth: 0 },
-    detailImage: { width: 112, height: 112, borderRadius: 14, backgroundColor: c.thumb },
+    detailImage: { width: '100%', height: 200, borderRadius: 14, backgroundColor: c.thumb, marginBottom: 4 },
     photoButton: {
       borderRadius: 999,
       borderWidth: 1,

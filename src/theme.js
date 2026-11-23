@@ -72,7 +72,7 @@ export const darkColors = {
 const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
-  const [dark, setDarkState] = useState(false);
+  const [dark, setDarkState] = useState(true);
 
   useEffect(() => {
     let cancelled = false;

@@ -69,18 +69,34 @@ function stackPins(pins) {
 }
 
 export function regionForPinLoad(region, screenHeight) {
-  if (!region || !region.latitudeDelta || region.latitudeDelta > REVEAL_DELTA) {
+  if (!region || !region.latitudeDelta) {
     return region;
   }
 
-  const height = Math.max(screenHeight || 800, 1);
-  const pad = region.latitudeDelta * (STACK_FETCH_PAD_PX / height);
+  if (region.latitudeDelta <= REVEAL_DELTA) {
+    const height = Math.max(screenHeight || 800, 1);
+    const pad = region.latitudeDelta * (STACK_FETCH_PAD_PX / height);
 
-  return {
-    ...region,
-    latitude: region.latitude + pad / 2,
-    latitudeDelta: region.latitudeDelta + pad,
-  };
+    return {
+      ...region,
+      latitude: region.latitude + pad / 2,
+      latitudeDelta: region.latitudeDelta + pad,
+    };
+  }
+
+  if (region.latitudeDelta <= 0.16) {
+    const lngDelta = region.longitudeDelta || region.latitudeDelta;
+    const latPad = Math.min(region.latitudeDelta * 0.8, 0.045);
+    const lngPad = Math.min(lngDelta * 0.8, 0.045);
+
+    return {
+      ...region,
+      latitudeDelta: region.latitudeDelta + latPad * 2,
+      longitudeDelta: lngDelta + lngPad * 2,
+    };
+  }
+
+  return region;
 }
 
 export function groupPins(pins, region) {

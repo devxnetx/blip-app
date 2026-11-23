@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image, Platform, StyleSheet, Text, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 import { useTheme } from '../theme';
 import { timeAgo, upcomingLabel } from '../time';
@@ -8,6 +8,7 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, tail = 'center', now 
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [tracking, setTracking] = useState(true);
+  const [height, setHeight] = useState(0);
   const freeze = useRef(null);
   const laidOut = useRef('');
   const posted = upcomingLabel(pin, now) || timeAgo(pin.created_at, now);
@@ -33,17 +34,20 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, tail = 'center', now 
     return () => clearTimeout(freeze.current);
   }, [stackX, stackY, tail, pin.image_url, pin.message, pin.category, label, posted, stamp, colors]);
 
+  const cardHeight = height || (pin.image_url ? 96 : 64);
+
   return (
     <Marker
       coordinate={{ latitude: pin.latitude, longitude: pin.longitude }}
       anchor={{ x: 0.5, y: 1 }}
+      centerOffset={{ x: stackX || 0, y: -(cardHeight / 2 + (stackY || 0)) }}
       tracksViewChanges={tracking}
-      zIndex={stackY + (stackX > 0 ? 1 : 0) + 1}
+      zIndex={1000 + (stackY || 0) + (stackX > 0 ? 1 : 0)}
       onPress={onPress}
     >
       <View style={styles.shift} collapsable={false} pointerEvents="box-none">
-        {stackX > 0 ? <View pointerEvents="none" style={{ width: stackX * 2 }} /> : null}
-        <View style={styles.wrap} collapsable={false} pointerEvents="box-none" onLayout={onLayout}>
+        {Platform.OS !== 'ios' && stackX > 0 ? <View pointerEvents="none" style={{ width: stackX * 2 }} /> : null}
+        <View style={styles.wrap} collapsable={false} pointerEvents="box-none">
           <View
             style={[
               styles.card,
@@ -51,6 +55,13 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, tail = 'center', now 
               tail === 'left' && styles.cardLeft,
             ]}
             collapsable={false}
+            onLayout={(event) => {
+              const next = Math.round(event.nativeEvent.layout.height);
+              if (next && next !== height) {
+                setHeight(next);
+              }
+              onLayout();
+            }}
           >
             <View style={styles.bubble}>
               {pin.image_url ? (
@@ -72,9 +83,9 @@ function PinMarker({ pin, onPress, stackX = 0, stackY = 0, tail = 'center', now 
               tail === 'left' && styles.tailLeft,
             ]} />
           </View>
-          {stackY > 0 ? <View pointerEvents="none" style={{ height: stackY }} /> : null}
+          {Platform.OS !== 'ios' && stackY > 0 ? <View pointerEvents="none" style={{ height: stackY }} /> : null}
         </View>
-        {stackX < 0 ? <View pointerEvents="none" style={{ width: -stackX * 2 }} /> : null}
+        {Platform.OS !== 'ios' && stackX < 0 ? <View pointerEvents="none" style={{ width: -stackX * 2 }} /> : null}
       </View>
     </Marker>
   );
